@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment (UV)
+.venv/
+venv/
+ENV/
+env/
+
+# UV Lock File (optional - include if you want reproducible builds)
+# uv.lock
+
+# Data & Models (too large)
+data/*.csv
+data/*.parquet
+data/*.wrk
+data/*.zygo
+models/*.pth
+models/*.onnx
+models/*.pt
+C:/Users/dmonacha/Downloads/dev_stage_temp/heightmap-difference
+
+# Training Outputs
+outputs/
+logs/
+checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Logs
+*.log
+
+# Temporary
+tmp/
+temp/
+.cache/
+
+# PyTorch
+lightning_logs/
+wandb/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+heightmap-difference

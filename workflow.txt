@@ -1,0 +1,14 @@
+1.first create a Dash App where you have a table which can help you load the data from the python code.
+2.make the table clicakable to load the image based on the selection.
+3.this app will be used to see the image loaded for the analysis to have the finding to distinguish normal vs bad images.
+4.now once you think the image is loaded make a click button to say anomaly_ZA/anomaly_ZE or normal_ze/normal_za which will be helpful to have a new column created for the same database(or copy of the database) 
+ 4 a. this is done in order to have the image selected to finally see the normal vs anomolus image based on the user ( so the new database can be used to filter out the normal vs anomoalus image later on )
+
+
+
+also see if we can have a viz to have the difference calcukted for the image in the dash app
+ a way to have the half image to generate the other side lets say Za and Ze having its second half mirrored to get  nirmal images in geenral
+
+create a code which can helpin training a model for the images..
+
+

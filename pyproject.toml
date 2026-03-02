@@ -1,0 +1,83 @@
+[project]
+name = "wafer-dev-predictor"
+version = "0.1.0"
+description = "Deep learning-based wafer defect prediction (Tab 3 implementation)"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+dependencies = [
+    # Core Deep Learning
+    
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "numpy>=1.24.0",
+    "pillow>=9.5.0",
+    
+    # Training Framework
+    "pytorch-lightning>=2.0.0",
+    "albumentations>=1.3.0",
+    "tensorboard>=2.13.0",
+    
+    # Model Export & Inference
+    "onnx>=1.14.0",
+    "onnxruntime>=1.15.0",
+    
+    # Metrics & Evaluation
+    "torchmetrics>=1.0.0",
+    "scikit-image>=0.21.0",
+    
+    # Data Handling
+    "pandas>=2.0.0",
+    "pyarrow>=12.0.0",
+    
+    # Utilities
+    "pyyaml>=6.0",
+    "tqdm>=4.65.0",
+    "matplotlib>=3.7.0",
+    "scikit-learn>=1.3.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "onnxruntime-gpu>=1.15.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.7.0",
+    "ruff>=0.0.285",
+    "mypy>=1.5.0",
+]
+notebooks = [
+    "jupyter>=1.0.0",
+    "ipykernel>=6.25.0",
+    "ipywidgets>=8.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+]
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-v --tb=short"

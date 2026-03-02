@@ -1,0 +1,84 @@
+# Project Configuration
+project:
+  name: "wafer_dev_predictor"
+  version: "0.1.0"
+
+# Data Configuration
+data:
+  # Path to main application's database
+  database_path: "/path/to/your/main/app/data/database.parquet"
+
+  # Output directory for splits
+  output_dir: "data/"
+
+  # Train/Val/Test split ratios
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+
+  # Random seed for reproducibility
+  random_seed: 42
+
+# Model Architecture
+model:
+  name: "unet"
+  in_channels: 2      # masked_image + binary_mask
+  out_channels: 1     # predicted_image
+  base_channels: 64   # Starting number of channels
+  depth: 4            # Number of encoder/decoder levels
+
+# Training Configuration
+training:
+  # Hardware
+  device: "cuda"      # "cuda" or "cpu"
+  num_workers: 4      # Data loading workers
+
+  # Batch and Learning
+  batch_size: 8
+  learning_rate: 0.0001
+  epochs: 100
+
+  # Loss Function Weights
+  loss_l1_weight: 1.0
+  loss_ssim_weight: 0.5
+
+  # Image Resolution (for training)
+  train_height: 256
+  train_width: 512
+
+  # Checkpointing
+  save_every: 10                    # Save checkpoint every N epochs
+  early_stopping_patience: 15       # Stop if no improvement for N epochs
+  monitor_metric: "val_ssim"        # Metric to monitor
+
+  # Augmentation
+  use_augmentation: true
+  augmentation_prob: 0.5
+
+# Inference Configuration
+inference:
+  model_dir: "models/"
+  device: "cuda"              # "cuda" or "cpu"
+  batch_size: 1               # Usually 1 for inference
+
+  # Original image size (from main app)
+  original_height: 1024
+  original_width: 1024
+
+# Mask Configuration (Defect Regions)
+mask:
+  ze_range: [0.0, 0.40]       # ZE: Left 40% (defect region)
+  za_range: [0.60, 1.00]      # ZA: Right 40% (defect region)
+
+# Logging
+logging:
+  level: "INFO"
+  log_dir: "outputs/logs/"
+  tensorboard_dir: "outputs/tensorboard/"
+
+# Paths
+paths:
+  data_dir: "data/"
+  models_dir: "models/"
+  outputs_dir: "outputs/"
+  checkpoints_dir: "outputs/checkpoints/"
