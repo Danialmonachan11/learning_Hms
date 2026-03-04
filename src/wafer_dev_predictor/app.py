@@ -842,9 +842,11 @@ def run_analysis(n_clicks, serial, side, process_step, method, degree, fwhm_mm, 
                 anom_col_end=anom_col_end,
             )
 
-        # Shared z range for original + predicted (comparable colorscales)
-        z_min = float(min(np.nanmin(z), np.nanmin(predicted_z)))
-        z_max = float(max(np.nanmax(z), np.nanmax(predicted_z)))
+        # Use the original's own range for both figures so the original never
+        # changes when the slider or method changes (predicted is shown on the
+        # same scale for fair comparison).
+        z_min = float(np.nanmin(z))
+        z_max = float(np.nanmax(z))
 
         fig_original = _make_heatmap_fig(
             z, f"Original — {title_base}", DARK_RAINBOW, z_min, z_max

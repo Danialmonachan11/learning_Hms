@@ -131,7 +131,8 @@ plus quantitative metrics.
 - **Anomaly area %**: fraction of anomalous-region pixels with |deviation| > 10 nm
 
 ### Colorscales
-- Original + Predicted: DARK_RAINBOW (same scale, comparable)
+- Original + Predicted: DARK_RAINBOW — both use the original's z range so the
+  original image never changes when slider/method changes (fix: 2026-03-04)
 - Anomaly map: `RdBu_r` diverging (blue = below predicted, red = above)
 
 ### Future: replace polynomial with PCA statistical model
