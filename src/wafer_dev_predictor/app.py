@@ -280,4 +280,5 @@ def _save_labels(data: list[dict]) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=8050)
+    print("Open in browser: http://127.0.0.1:8050")
+    app.run(debug=True, host="127.0.0.1", port=8050)
