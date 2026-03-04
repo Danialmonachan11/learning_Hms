@@ -16,6 +16,9 @@ data:
   val_ratio: 0.15
   test_ratio: 0.15
 
+  # Labeled database output
+  labeled_db_path: "data/labeled_measurements.parquet"
+
   # Random seed for reproducibility
   random_seed: 42
 
