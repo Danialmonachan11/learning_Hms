@@ -7,9 +7,12 @@ Tab 1 — Labeling:
     measurement as normal or anomalous.
 
 Tab 2 — Anomaly Analysis:
-    Select a measurement, mark the anomalous column range via a range slider,
-    fit a 2D polynomial to the clean region, and visualise the predicted normal
-    surface alongside the anomaly map with quantitative metrics.
+    Select a measurement and run one of three methods to estimate the process
+    baseline and extract the anomaly map:
+      - Robust Poly (recommended): IRLS fit to the full image — no region
+        selection needed, automatically ignores defect pixels.
+      - Polynomial: manual region selection via box-draw on the original image.
+      - Gaussian: global low-pass filter via fastlibrary.
 
 Run with: py -3.11 app.py  (from src/wafer_dev_predictor/ directory)
 """
@@ -30,7 +33,11 @@ from dash import dash_table, dcc, html, Input, Output, State, callback, no_updat
 
 from color_map import false_color_map_with_histogram
 from color_scale import DARK_RAINBOW
-from analysis.prediction import predict_normal_polynomial, predict_normal_gaussian
+from analysis.prediction import (
+    predict_normal_polynomial,
+    predict_normal_robust_polynomial,
+    predict_normal_gaussian,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -469,6 +476,10 @@ app.layout = html.Div(
                                                     id="t2-method",
                                                     options=[
                                                         {
+                                                            "label": " Robust Poly ★",
+                                                            "value": "RobustPoly",
+                                                        },
+                                                        {
                                                             "label": " Polynomial",
                                                             "value": "Polynomial",
                                                         },
@@ -477,10 +488,14 @@ app.layout = html.Div(
                                                             "value": "Gaussian",
                                                         },
                                                     ],
-                                                    value="Polynomial",
+                                                    value="RobustPoly",
                                                     inline=True,
                                                     inputStyle={"marginRight": "4px"},
                                                     labelStyle={"marginRight": "12px"},
+                                                ),
+                                                html.Div(
+                                                    "★ fits whole image automatically — box-select only used by Polynomial",
+                                                    style={"fontSize": "11px", "color": "#888", "marginTop": "2px"},
                                                 ),
                                             ]
                                         ),
@@ -845,7 +860,16 @@ def run_analysis(n_clicks, serial, side, process_step, method, degree, fwhm_mm, 
 
         title_base = f"{serial} | {side} | {process_step}"
 
-        if method == "Polynomial":
+        if method == "RobustPoly":
+            # IRLS robust fit — no region selection needed, uses full image
+            predicted_z, anomaly_z, metrics = predict_normal_robust_polynomial(
+                z,
+                degree=int(degree),
+                n_iter=5,
+                k_sigma=2.0,
+            )
+        elif method == "Polynomial":
+            # Manual region: fit to clean columns, extrapolate into anomalous region
             predicted_z, anomaly_z, metrics = predict_normal_polynomial(
                 z,
                 anom_col_start=anom_col_start,
@@ -853,6 +877,7 @@ def run_analysis(n_clicks, serial, side, process_step, method, degree, fwhm_mm, 
                 degree=int(degree),
             )
         else:
+            # Gaussian low-pass — global filter, region used for metrics only
             predicted_z, anomaly_z, metrics = predict_normal_gaussian(
                 topo,
                 fwhm_m=float(fwhm_mm) / 1000.0,

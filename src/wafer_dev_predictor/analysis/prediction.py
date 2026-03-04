@@ -138,6 +138,99 @@ def predict_normal_polynomial(
     return predicted_z, anomaly_z, metrics
 
 
+def _weighted_lstsq(A: np.ndarray, z: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Solve weighted least squares by rescaling rows by sqrt(weight)."""
+    w_sqrt = np.sqrt(weights)
+    coeffs, _, _, _ = linalg.lstsq(A * w_sqrt[:, np.newaxis], z * w_sqrt)
+    return coeffs
+
+
+def predict_normal_robust_polynomial(
+    z: np.ndarray,
+    degree: int = 5,
+    n_iter: int = 5,
+    k_sigma: float = 2.0,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """
+    Fit a robust 2D polynomial to the FULL image using IRLS (Huber weights).
+
+    No manual region selection required. The robust estimator automatically
+    downweights pixels that deviate from the smooth process background, so the
+    fitted polynomial captures the process signature only — not the defect.
+
+    Why this works:
+        Every wafer diff map = smooth process component + localised defect.
+        The process component is low spatial frequency (well described by a
+        low-degree polynomial). The defect is a localised deviation on top.
+        IRLS finds the polynomial that best fits the MAJORITY of pixels while
+        treating the defect pixels as outliers — without knowing where they are.
+
+    Algorithm (Huber IRLS):
+        1. Initial unweighted polynomial fit to all valid pixels.
+        2. Compute residuals → robust sigma via MAD * 1.4826.
+        3. Huber weights: w_i = min(1,  k_sigma * sigma / |r_i|)
+           Pixels with large residuals (defects) get weight < 1.
+        4. Weighted least-squares refit.
+        5. Repeat steps 2-4 for n_iter iterations.
+        Defect pixels converge to near-zero weight; clean pixels stay at 1.
+
+    Args:
+        z: 2D height map in nm. NaN where no valid data.
+        degree: Polynomial degree (default 5).
+        n_iter: IRLS iterations (default 5 — converges in 3-4).
+        k_sigma: Huber threshold in units of robust sigma (default 2.0).
+                 Lower → more aggressive outlier rejection (catches subtle defects).
+                 Higher → more conservative (only flags obvious defects).
+
+    Returns:
+        (predicted_z, anomaly_z, metrics)
+        anomaly_z = z - predicted_z  (the residual after removing process component)
+        metrics are computed on pixels where |residual| > k_sigma * sigma_robust,
+        i.e. exactly the pixels IRLS identified as non-process-like.
+    """
+    n_rows, n_cols = z.shape
+    row_idx, col_idx = np.mgrid[0:n_rows, 0:n_cols]
+
+    valid_mask = ~np.isnan(z)
+    valid_rows = row_idx[valid_mask].astype(float)
+    valid_cols = col_idx[valid_mask].astype(float)
+    valid_z = z[valid_mask]
+
+    A_valid = _poly_design_matrix(valid_rows, valid_cols, n_rows, n_cols, degree)
+
+    # Initial unweighted fit
+    coeffs, _, _, _ = linalg.lstsq(A_valid, valid_z)
+
+    # IRLS iterations
+    for _ in range(n_iter):
+        residuals = valid_z - A_valid @ coeffs
+        sigma = np.median(np.abs(residuals)) * 1.4826  # robust sigma via MAD
+        if sigma < 1e-10:
+            break
+        weights = np.minimum(1.0, (k_sigma * sigma) / np.abs(residuals))
+        coeffs = _weighted_lstsq(A_valid, valid_z, weights)
+
+    # Final residuals and robust sigma for anomaly mask
+    final_residuals = valid_z - A_valid @ coeffs
+    sigma_final = np.median(np.abs(final_residuals)) * 1.4826
+
+    # Evaluate polynomial on full grid
+    all_rows = row_idx.flatten().astype(float)
+    all_cols = col_idx.flatten().astype(float)
+    A_full = _poly_design_matrix(all_rows, all_cols, n_rows, n_cols, degree)
+    predicted_z = (A_full @ coeffs).reshape(n_rows, n_cols)
+    predicted_z = np.where(np.isnan(z), np.nan, predicted_z)
+
+    anomaly_z = z - predicted_z
+
+    # Anomaly mask: pixels whose residual exceeds the IRLS outlier threshold —
+    # exactly the pixels the robust fit identified as not fitting the process shape
+    anom_mask = (np.abs(anomaly_z) > k_sigma * sigma_final) & valid_mask
+
+    metrics = compute_metrics(anomaly_z, anom_mask)
+    return predicted_z, anomaly_z, metrics
+
+
 def predict_normal_gaussian(
     topo: "fl.Topography",
     fwhm_m: float = 0.005,
