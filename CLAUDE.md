@@ -20,7 +20,7 @@ Uses a U-Net architecture to predict surface topography from masked wafer images
 - **DL Framework:** PyTorch + PyTorch Lightning
 - **Web App:** Dash (interactive labeling tool)
 - **Visualization:** Plotly (interactive), Matplotlib (static)
-- **Data:** Polars, Pandas, PyArrow (parquet files)
+- **Data:** Polars (primary), Pandas, PyArrow (parquet files)
 - **Proprietary:** `fastlibrary` (ASML), `zygorw` (Zygo file reader)
 - **Build System:** Hatchling
 
