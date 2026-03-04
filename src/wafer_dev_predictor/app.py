@@ -100,85 +100,112 @@ table_columns = [
 # ---------------------------------------------------------------------------
 app = dash.Dash(__name__, title="Wafer Labeling Tool")
 
+BTN_STYLE = {
+    "margin": "5px",
+    "padding": "10px 20px",
+    "color": "white",
+    "border": "none",
+    "cursor": "pointer",
+    "fontSize": "15px",
+    "borderRadius": "4px",
+}
+
 app.layout = html.Div(
     [
-        html.H1("Wafer Dev Predictor — Image Labeling Tool"),
-        # ---- Data Table ----
-        dash_table.DataTable(
-            id="measurements-table",
-            columns=table_columns,
-            data=table_data,
-            row_selectable="single",
-            selected_rows=[],
-            filter_action="native",
-            sort_action="native",
-            page_size=20,
-            style_table={"overflowX": "auto"},
-            style_cell={"textAlign": "left", "padding": "8px", "fontSize": "14px"},
-            style_header={"fontWeight": "bold", "backgroundColor": "#f0f0f0"},
-            style_data_conditional=[
-                {
-                    "if": {"filter_query": '{Label} = "Normal_ZA"'},
-                    "backgroundColor": "#d4edda",
-                },
-                {
-                    "if": {"filter_query": '{Label} = "Normal_ZE"'},
-                    "backgroundColor": "#d4edda",
-                },
-                {
-                    "if": {"filter_query": '{Label} = "Anomaly_ZA"'},
-                    "backgroundColor": "#f8d7da",
-                },
-                {
-                    "if": {"filter_query": '{Label} = "Anomaly_ZE"'},
-                    "backgroundColor": "#f8d7da",
-                },
-            ],
+        html.H2(
+            "Wafer Dev Predictor — Image Labeling Tool",
+            style={"margin": "0 0 12px 0", "fontSize": "20px"},
         ),
-        html.Hr(),
-        # ---- Image Viewer ----
-        dcc.Loading(
-            id="loading-image",
-            type="circle",
-            children=dcc.Graph(id="image-viewer", style={"height": "600px"}),
-        ),
-        html.Hr(),
-        # ---- Labeling Buttons ----
-        html.Div(
+        dcc.Tabs(
             [
-                html.Button(
-                    "Normal_ZA",
-                    id="btn-normal-za",
-                    n_clicks=0,
-                    style={"margin": "5px", "padding": "10px 20px", "backgroundColor": "#28a745", "color": "white", "border": "none", "cursor": "pointer", "fontSize": "16px"},
+                dcc.Tab(
+                    label="Labeling",
+                    children=[
+                        # ---- Two-column row: table left, image right ----
+                        html.Div(
+                            [
+                                # Left: scrollable table (fixed height, no page scroll)
+                                html.Div(
+                                    dash_table.DataTable(
+                                        id="measurements-table",
+                                        columns=table_columns,
+                                        data=table_data,
+                                        row_selectable="single",
+                                        selected_rows=[],
+                                        filter_action="native",
+                                        sort_action="native",
+                                        page_action="none",  # disable pagination → all rows visible
+                                        fixed_rows={"headers": True},
+                                        style_table={
+                                            "height": "calc(100vh - 130px)",
+                                            "overflowY": "auto",
+                                            "overflowX": "auto",
+                                        },
+                                        style_cell={
+                                            "textAlign": "left",
+                                            "padding": "6px 10px",
+                                            "fontSize": "13px",
+                                            "whiteSpace": "normal",
+                                            "minWidth": "80px",
+                                        },
+                                        style_header={
+                                            "fontWeight": "bold",
+                                            "backgroundColor": "#e8e8e8",
+                                            "position": "sticky",
+                                            "top": 0,
+                                        },
+                                        style_data_conditional=[
+                                            {"if": {"filter_query": '{Label} = "Normal_ZA"'}, "backgroundColor": "#d4edda"},
+                                            {"if": {"filter_query": '{Label} = "Normal_ZE"'}, "backgroundColor": "#d4edda"},
+                                            {"if": {"filter_query": '{Label} = "Anomaly_ZA"'}, "backgroundColor": "#f8d7da"},
+                                            {"if": {"filter_query": '{Label} = "Anomaly_ZE"'}, "backgroundColor": "#f8d7da"},
+                                        ],
+                                    ),
+                                    style={"width": "38%", "paddingRight": "12px", "boxSizing": "border-box"},
+                                ),
+                                # Right: image + buttons
+                                html.Div(
+                                    [
+                                        dcc.Loading(
+                                            id="loading-image",
+                                            type="circle",
+                                            children=dcc.Graph(
+                                                id="image-viewer",
+                                                style={"height": "calc(100vh - 220px)"},
+                                                config={"responsive": True},
+                                            ),
+                                        ),
+                                        # Labeling buttons
+                                        html.Div(
+                                            [
+                                                html.Button("Normal_ZA", id="btn-normal-za", n_clicks=0,
+                                                    style={**BTN_STYLE, "backgroundColor": "#28a745"}),
+                                                html.Button("Normal_ZE", id="btn-normal-ze", n_clicks=0,
+                                                    style={**BTN_STYLE, "backgroundColor": "#28a745"}),
+                                                html.Button("Anomaly_ZA", id="btn-anomaly-za", n_clicks=0,
+                                                    style={**BTN_STYLE, "backgroundColor": "#dc3545"}),
+                                                html.Button("Anomaly_ZE", id="btn-anomaly-ze", n_clicks=0,
+                                                    style={**BTN_STYLE, "backgroundColor": "#dc3545"}),
+                                            ],
+                                            style={"textAlign": "center", "paddingTop": "8px"},
+                                        ),
+                                        html.Div(
+                                            id="label-status",
+                                            style={"textAlign": "center", "padding": "6px", "fontSize": "14px", "fontWeight": "bold"},
+                                        ),
+                                    ],
+                                    style={"width": "62%", "boxSizing": "border-box"},
+                                ),
+                            ],
+                            style={"display": "flex", "flexDirection": "row", "alignItems": "flex-start", "paddingTop": "10px"},
+                        ),
+                    ],
                 ),
-                html.Button(
-                    "Normal_ZE",
-                    id="btn-normal-ze",
-                    n_clicks=0,
-                    style={"margin": "5px", "padding": "10px 20px", "backgroundColor": "#28a745", "color": "white", "border": "none", "cursor": "pointer", "fontSize": "16px"},
-                ),
-                html.Button(
-                    "Anomaly_ZA",
-                    id="btn-anomaly-za",
-                    n_clicks=0,
-                    style={"margin": "5px", "padding": "10px 20px", "backgroundColor": "#dc3545", "color": "white", "border": "none", "cursor": "pointer", "fontSize": "16px"},
-                ),
-                html.Button(
-                    "Anomaly_ZE",
-                    id="btn-anomaly-ze",
-                    n_clicks=0,
-                    style={"margin": "5px", "padding": "10px 20px", "backgroundColor": "#dc3545", "color": "white", "border": "none", "cursor": "pointer", "fontSize": "16px"},
-                ),
-            ],
-            style={"textAlign": "center"},
+            ]
         ),
-        # ---- Status Message ----
-        html.Div(id="label-status", style={"textAlign": "center", "padding": "10px", "fontSize": "16px", "fontWeight": "bold"}),
-        # Hidden store for selected row info
         dcc.Store(id="selected-source-path"),
     ],
-    style={"maxWidth": "1400px", "margin": "0 auto", "padding": "20px"},
+    style={"padding": "10px", "fontFamily": "Arial, sans-serif", "height": "100vh", "boxSizing": "border-box"},
 )
 
 
