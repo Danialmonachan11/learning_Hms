@@ -5,18 +5,21 @@ Displays a table of wafer measurements, allows clicking rows to view
 false-color topography images, and provides buttons to label each
 measurement as normal or anomalous.
 
-Run with: uv run python -m wafer_dev_predictor.app
+Run with: py -3.11 app.py  (from src/wafer_dev_predictor/ directory)
 """
 
-import os
+import sys
 from pathlib import Path
+
+# Allow bare imports of color_map / color_scale (mirrors existing code style)
+sys.path.insert(0, str(Path(__file__).parent / "data"))
 
 import dash
 import polars as pl
 import fastlibrary as fl
 from dash import dash_table, dcc, html, Input, Output, State, callback, no_update
 
-from wafer_dev_predictor.data.color_map import false_color_map_with_histogram
+from color_map import false_color_map_with_histogram
 
 # ---------------------------------------------------------------------------
 # Configuration
