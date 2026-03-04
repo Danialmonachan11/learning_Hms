@@ -1,0 +1,8 @@
+ModuleNotFoundError: No module named 'wafer_dev_predictor'
+(wafer-dev-predictor) PS C:\Users\dmonacha\Downloads\learning_Hms\src\wafer_dev_predictor> py -3.11 app.py
+C:\Program Files\Python311\Lib\site-packages\dash\dash.py:22: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import get_distribution, parse_version
+Traceback (most recent call last):
+  File "C:\Users\dmonacha\Downloads\learning_Hms\src\wafer_dev_predictor\app.py", line 19, in <module>
+    from wafer_dev_predictor.data.color_map import false_color_map_with_histogram
+ModuleNotFoundError: No module named 'wafer_dev_predictor'
