@@ -16,7 +16,6 @@ removes high-frequency content but may miss large-scale drift in the anomalous r
 
 import numpy as np
 from scipy import linalg
-import fastlibrary as fl
 
 
 def compute_metrics(anomaly_z: np.ndarray, anom_mask: np.ndarray) -> dict:
@@ -160,7 +159,7 @@ def predict_normal_gaussian(
     Returns:
         (predicted_z, anomaly_z, metrics) where metrics are computed on the anomalous region.
     """
-    filtered_topo = fl.gauss_low_pass(topo, fwhm_m)
+    filtered_topo = topo.gauss_low_pass(fwhm_m=fwhm_m)
     predicted_z = filtered_topo.z_map * 1e9
     actual_z = topo.z_map * 1e9
     anomaly_z = actual_z - predicted_z

@@ -111,10 +111,14 @@ plus quantitative metrics.
   (scipy is already a transitive dep via torch/sklearn).
 
 ### Anomalous region
-- User-defined via a **range slider** (0–100% of image columns).
-- Default: ZA → [60%, 100%], ZE → [0%, 40%] (auto-set when Side changes).
+- User-defined by **drawing a box directly on the Original heatmap** (Plotly box-select).
+- Box-select returns exact pixel column range via `selectedData["range"]["x"]`.
+- Default when no box drawn: ZA → 60%–100%, ZE → 0%–40% (resets on Side change).
+- Active region shown as info text below the Original image.
 - Polynomial is fit to all pixels OUTSIDE the selected range (clean region).
 - Metrics are computed on the selected range (anomalous region) only.
+- Column range stored in `dcc.Store(id="t2-col-range")` — either absolute pixel indices
+  (from box-select) or percentages (from default).
 
 ### Computation model
 - No pre-trained model file; calculated fresh per Analyse click.
@@ -143,8 +147,8 @@ with a PCA-based statistical model trained on the labeled normal set. The API in
 ## Tech Notes
 - `analysis/prediction.py` uses `scipy.linalg.lstsq` — no new pyproject.toml entry needed
   (scipy is already present as a transitive dependency).
-- `fl.gauss_low_pass(topo, fwhm_m)` — assumed module-level function signature based on
-  project notebook. If API differs, error will surface on first Gaussian method use.
+- `topo.gauss_low_pass(fwhm_m)` — method on Topography object (confirmed from notebook).
+  `topo.subtract(other_topo)` is also a method. Both confirmed in heightmap_difference.ipynb.
 - `_make_heatmap_fig` helper in app.py mirrors `false_color_map_with_histogram` but
   accepts raw numpy arrays and omits `scaleanchor` so wide wafer images fill the
   fixed-height (300px) graph containers.

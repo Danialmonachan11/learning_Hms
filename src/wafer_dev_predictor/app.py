@@ -536,54 +536,39 @@ app.layout = html.Div(
                                 ),
                                 # ---- Original image ----
                                 html.Div(
-                                    "Original",
-                                    style={
-                                        "fontWeight": "bold",
-                                        "fontSize": "14px",
-                                        "marginTop": "14px",
-                                        "marginBottom": "2px",
-                                    },
+                                    [
+                                        html.Span(
+                                            "Original",
+                                            style={"fontWeight": "bold", "fontSize": "14px"},
+                                        ),
+                                        html.Span(
+                                            "  ← draw a box on the image to mark the anomalous region, then click Analyse",
+                                            style={"fontSize": "12px", "color": "#666"},
+                                        ),
+                                    ],
+                                    style={"marginTop": "14px", "marginBottom": "2px"},
                                 ),
                                 dcc.Loading(
                                     type="circle",
                                     children=dcc.Graph(
                                         id="t2-original-graph",
                                         style={"height": "300px"},
-                                        config={"responsive": True},
+                                        config={
+                                            "responsive": True,
+                                            "modeBarButtonsToAdd": ["select2d"],
+                                            "displayModeBar": True,
+                                        },
                                     ),
                                 ),
-                                # ---- Range slider for anomalous columns ----
+                                # ---- Selection info (replaces range slider) ----
                                 html.Div(
-                                    style={"padding": "8px 20px 4px 20px"},
-                                    children=[
-                                        html.Div(
-                                            "Anomalous region (% of image columns):",
-                                            style={
-                                                "fontSize": "13px",
-                                                "fontWeight": "bold",
-                                                "marginBottom": "4px",
-                                            },
-                                        ),
-                                        dcc.RangeSlider(
-                                            id="t2-anom-slider",
-                                            min=0,
-                                            max=100,
-                                            step=1,
-                                            value=[60, 100],
-                                            marks={
-                                                0: "0%",
-                                                20: "20%",
-                                                40: "40%",
-                                                60: "60%",
-                                                80: "80%",
-                                                100: "100%",
-                                            },
-                                            tooltip={
-                                                "placement": "bottom",
-                                                "always_visible": True,
-                                            },
-                                        ),
-                                    ],
+                                    id="t2-selection-info",
+                                    style={
+                                        "padding": "6px 4px",
+                                        "fontSize": "13px",
+                                        "color": "#555",
+                                        "fontStyle": "italic",
+                                    },
                                 ),
                                 # ---- Predicted Normal image ----
                                 html.Div(
@@ -638,6 +623,7 @@ app.layout = html.Div(
             ]
         ),
         dcc.Store(id="selected-source-path"),
+        dcc.Store(id="t2-col-range"),  # {"pct_start": 0-100, "pct_end": 0-100} or {"col_start": int, "col_end": int}
     ],
     style={
         "padding": "10px",
@@ -764,14 +750,37 @@ def update_t2_process_steps(serial, side):
 
 
 @callback(
-    Output("t2-anom-slider", "value"),
+    Output("t2-col-range", "data"),
+    Output("t2-selection-info", "children"),
+    Input("t2-original-graph", "selectedData"),
     Input("t2-side", "value"),
 )
-def update_t2_slider_default(side):
-    """Reset anomalous region slider to the canonical default when side changes."""
-    if side == "ZE":
-        return [0, 40]  # ZE: left 40%
-    return [60, 100]  # ZA: right 40% (default)
+def update_col_range(selected_data, side):
+    """
+    Update the anomalous region store from either:
+    - A box drawn on the original heatmap (selectedData)
+    - A side change (resets to the canonical ZA/ZE default)
+    """
+    ctx = dash.callback_context
+    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else None
+
+    # Side changed or no box drawn yet → use canonical default
+    if triggered_id == "t2-side" or not selected_data or "range" not in selected_data:
+        if side == "ZE":
+            info = "Active region: 0%–40% (ZE left zone default) — draw a box on Original to change"
+            return {"pct_start": 0, "pct_end": 40}, info
+        info = "Active region: 60%–100% (ZA right zone default) — draw a box on Original to change"
+        return {"pct_start": 60, "pct_end": 100}, info
+
+    # Box drawn on original image → use exact pixel column range
+    x_range = selected_data["range"].get("x", [])
+    if len(x_range) < 2:
+        return no_update, no_update
+
+    col_start = max(0, int(x_range[0]))
+    col_end = int(x_range[1]) + 1  # +1 so slice is inclusive of last selected column
+    info = f"Active region: columns {col_start}–{col_end} (box drawn on image) — draw a new box to change"
+    return {"col_start": col_start, "col_end": col_end}, info
 
 
 @callback(
@@ -786,10 +795,10 @@ def update_t2_slider_default(side):
     State("t2-method", "value"),
     State("t2-poly-degree", "value"),
     State("t2-gauss-fwhm", "value"),
-    State("t2-anom-slider", "value"),
+    State("t2-col-range", "data"),
     prevent_initial_call=True,
 )
-def run_analysis(n_clicks, serial, side, process_step, method, degree, fwhm_mm, slider_value):
+def run_analysis(n_clicks, serial, side, process_step, method, degree, fwhm_mm, col_range):
     """
     Run polynomial or Gaussian surface prediction and return three stacked figures + metrics.
 
@@ -821,9 +830,18 @@ def run_analysis(n_clicks, serial, side, process_step, method, degree, fwhm_mm, 
         z = topo.z_map * 1e9  # height map in nm
         n_rows, n_cols = z.shape
 
-        # Convert slider percentages to column indices
-        anom_col_start = int(slider_value[0] / 100 * n_cols)
-        anom_col_end = int(slider_value[1] / 100 * n_cols)
+        # Resolve anomalous column range from store
+        # Store holds either exact pixel indices (from box-select) or percentages (from default)
+        if col_range and "col_start" in col_range:
+            anom_col_start = int(col_range["col_start"])
+            anom_col_end = min(int(col_range["col_end"]), n_cols)
+        elif col_range and "pct_start" in col_range:
+            anom_col_start = int(col_range["pct_start"] / 100 * n_cols)
+            anom_col_end = int(col_range["pct_end"] / 100 * n_cols)
+        else:
+            # Fallback: canonical side default
+            anom_col_start = int(0.6 * n_cols) if side == "ZA" else 0
+            anom_col_end = n_cols if side == "ZA" else int(0.4 * n_cols)
 
         title_base = f"{serial} | {side} | {process_step}"
 
@@ -851,6 +869,8 @@ def run_analysis(n_clicks, serial, side, process_step, method, degree, fwhm_mm, 
         fig_original = _make_heatmap_fig(
             z, f"Original — {title_base}", DARK_RAINBOW, z_min, z_max
         )
+        # Enable box-select as default mouse mode so user can draw region directly
+        fig_original.update_layout(dragmode="select")
         fig_predicted = _make_heatmap_fig(
             predicted_z,
             f"Predicted Normal ({method}) — {title_base}",
