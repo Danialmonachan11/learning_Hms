@@ -280,39 +280,49 @@ with the anomaly region replaced by a polynomial surface fit from surrounding pi
 
 ### Data source
 Same as Tab 3: `diff_map_files_HI` — 613 ZA/ZE diff maps from `generated_files.parquet`.
-Loaded via `zygo_reader.DatReader(path).get_topography_nm()`.
+Loaded via `fl.read_zygo(path)` → Topography object (fastlibrary).
 
 ### Layout (side-by-side, same pattern as Tab 3)
 - **Left panel (38%):** Side filter dropdown + DataTable (Side, Date, File)
 - **Right panel (62%):**
   1. File title
-  2. Controls: Poly degree dropdown (default 5)
-  3. **Image 1 — Original Diff Map** (DARK_RAINBOW, box-select enabled via `dragmode="select"`)
-  4. Selection info text
-  5. **Image 2 — Cleaned (Anomaly Removed)** (DARK_RAINBOW, same z range as Original)
+  2. Controls: Poly degree dropdown + Gauss FWHM slider
+  3. **Image 1 — Original Diff Map** (Gaussian smoothed, box-select enabled for metrics)
+  4. Info line (IRLS summary for whole image)
+  5. **Image 2 — Cleaned** (IRLS Robust Poly — anomaly removed from whole image)
+  6. **Region metrics panel** — appears when user draws a box on Image 1
+  7. **Metric legend** — collapsible "What do these metrics mean?" with descriptions
 
-### How anomaly removal works
+### How it works
 1. File loaded via `fl.read_zygo(path)` → Topography object
-2. Gaussian smoothing: `topo.gauss_low_pass(fwhm_m=...)` applied first (controlled by FWHM slider)
-3. Both Image 1 and Image 2 show the Gaussian-smoothed data
-4. User draws a rectangular box on Image 1
-5. `selectedData["range"]` gives `x` (columns) and `y` (rows) pixel ranges
-6. `inpaint_region(z, row_start, row_end, col_start, col_end, degree)` in `prediction.py`:
-   - Fits 2D polynomial to all valid pixels OUTSIDE the rectangle
-   - Evaluates polynomial on full grid
-   - Returns `cleaned_z` = smoothed original with rectangle replaced by polynomial prediction
-7. Image 2 shows `cleaned_z` — anomaly gone, replaced by smooth surface
-8. Changing FWHM slider re-renders both images with new smoothing level
+2. Gaussian smoothing: `topo.gauss_low_pass(fwhm_m=...)` applied (controlled by FWHM slider)
+3. Image 1 shows Gaussian-smoothed diff map
+4. Image 2 auto-computes IRLS robust polynomial on the smoothed data → shows the
+   process baseline with anomaly removed (whole image, no selection needed)
+5. User draws a box on Image 1 → region metrics panel compares that box area
+   between Image 1 (smoothed original) and Image 2 (baseline), computing deviation
+
+### Region metrics (box-select on Image 1)
+Deviation = smoothed original − IRLS baseline, computed only in the selected box.
+- **PV (Peak-to-Valley):** total height range of anomaly (nm)
+- **RMS:** root-mean-square deviation — standard semiconductor surface quality metric (nm)
+- **Mean deviation:** signed average — bump (+) or dip (−) (nm)
+- **Max |deviation|:** worst-case single point (nm) — used for pass/fail specs
+- **Std deviation:** spread of deviation values (nm)
+- **Anomaly area:** physical area where |deviation| > 10 nm (mm² and % of box)
+- **Anomaly volume:** sum of |deviation| × pixel area (nm·mm²) — total displaced material
+- **Max gradient:** sharpest edge (nm/pixel) — sharp = mechanical defect, gradual = process drift
+- Physical dimensions computed from 442×28 mm² wafer scan area
 
 ### Controls
-- **Poly degree** dropdown (1-6, default 5) — polynomial degree for inpainting
+- **Poly degree** dropdown (1-6, default 5) — polynomial degree for IRLS baseline
 - **Gauss FWHM slider** (1-20 mm, default 5) — Gaussian low-pass filter strength
 
-### Key functions
-- `inpaint_region()` in `analysis/prediction.py` — rectangular polynomial inpainting
-- `filter_t2_table()` — side filter callback
-- `load_t2_original()` — row click or FWHM change → load via `fl.read_zygo` + Gaussian → display Image 1
-- `update_t2_cleaned()` — box select or path change → load + Gaussian + inpaint → display Image 2
+### Key callbacks
+- `filter_t2_table()` — side filter for table
+- `load_t2_original()` — row click or FWHM change → `fl.read_zygo` + Gaussian → Image 1
+- `update_t2_cleaned()` — path or controls change → Gaussian + IRLS robust poly → Image 2
+- `compute_t2_region_metrics()` — box drawn on Image 1 → compares region vs baseline → metrics
 
 ### Stores
 - `dcc.Store(id="t2-full-path")` — stores the full file path of the selected diff map

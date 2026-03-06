@@ -736,6 +736,56 @@ app.layout = html.Div(
                                                 "whiteSpace": "pre-line",
                                             },
                                         ),
+                                        # Metric legend
+                                        html.Details(
+                                            style={"marginTop": "8px", "fontSize": "12px", "color": "#555"},
+                                            children=[
+                                                html.Summary(
+                                                    "What do these metrics mean?",
+                                                    style={"cursor": "pointer", "fontWeight": "bold", "fontSize": "12px"},
+                                                ),
+                                                html.Div(
+                                                    style={"padding": "6px 0 0 8px", "lineHeight": "1.7"},
+                                                    children=[
+                                                        html.Div([
+                                                            html.Strong("PV (Peak-to-Valley): "),
+                                                            "Total height range of the anomaly — max minus min deviation in the box (nm).",
+                                                        ]),
+                                                        html.Div([
+                                                            html.Strong("RMS: "),
+                                                            "Root-mean-square deviation — the standard surface quality metric in semiconductor (nm).",
+                                                        ]),
+                                                        html.Div([
+                                                            html.Strong("Mean deviation: "),
+                                                            "Signed average — positive means a bump (surface higher than expected), "
+                                                            "negative means a dip (nm).",
+                                                        ]),
+                                                        html.Div([
+                                                            html.Strong("Max |deviation|: "),
+                                                            "Worst-case single point — used for pass/fail quality specs (nm).",
+                                                        ]),
+                                                        html.Div([
+                                                            html.Strong("Std deviation: "),
+                                                            "Spread of deviation values — low means uniform anomaly, high means irregular (nm).",
+                                                        ]),
+                                                        html.Div([
+                                                            html.Strong("Anomaly area: "),
+                                                            "Physical area where deviation exceeds \u00b110 nm threshold (mm\u00b2 and % of box).",
+                                                        ]),
+                                                        html.Div([
+                                                            html.Strong("Anomaly volume: "),
+                                                            "Total displaced material = sum of |deviation| \u00d7 pixel area (nm\u00b7mm\u00b2). "
+                                                            "Captures both severity and extent.",
+                                                        ]),
+                                                        html.Div([
+                                                            html.Strong("Max gradient: "),
+                                                            "Sharpest edge in the anomaly (nm/pixel). Sharp = mechanical defect, "
+                                                            "gradual = process drift.",
+                                                        ]),
+                                                    ],
+                                                ),
+                                            ],
+                                        ),
                                     ],
                                 ),
                             ],
