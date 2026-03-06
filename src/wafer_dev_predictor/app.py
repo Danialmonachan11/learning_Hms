@@ -648,9 +648,27 @@ app.layout = html.Div(
                                                         ),
                                                     ]
                                                 ),
+                                                html.Div(
+                                                    style={"minWidth": "200px"},
+                                                    children=[
+                                                        html.Div("Gauss FWHM (mm)", style=CTRL_LABEL_STYLE),
+                                                        dcc.Slider(
+                                                            id="t2-gauss-fwhm",
+                                                            min=1,
+                                                            max=20,
+                                                            step=0.5,
+                                                            value=5,
+                                                            marks={1: "1", 5: "5", 10: "10", 20: "20"},
+                                                            tooltip={
+                                                                "placement": "bottom",
+                                                                "always_visible": True,
+                                                            },
+                                                        ),
+                                                    ],
+                                                ),
                                             ],
                                         ),
-                                        # Image 1: Original Diff Map
+                                        # Image 1: Original Diff Map (Gaussian smoothed)
                                         html.Div(
                                             [
                                                 html.Span(
@@ -1045,19 +1063,17 @@ def filter_t2_table(side_filter):
     Output("t2-full-path", "data"),
     Output("t2-file-title", "children"),
     Input("t2-diff-table", "selected_rows"),
+    Input("t2-gauss-fwhm", "value"),
     State("t2-diff-table", "data"),
     prevent_initial_call=True,
 )
-def load_t2_original(selected_rows, data):
-    """Load selected diff map and display as the Original image."""
+def load_t2_original(selected_rows, fwhm_mm, data):
+    """Load selected diff map, apply Gaussian smoothing, display as Original."""
     empty_fig = go.Figure()
     empty_fig.update_layout(xaxis={"visible": False}, yaxis={"visible": False})
 
     if not selected_rows:
         return empty_fig, None, ""
-
-    if not ZYGO_READER_AVAILABLE:
-        return empty_fig, None, "zygo_reader not installed"
 
     row = data[selected_rows[0]]
     full_path = row["fullPath"]
@@ -1065,12 +1081,16 @@ def load_t2_original(selected_rows, data):
     title_str = f"{row['Side']}  |  {row['DateStr']}  |  {file_name}"
 
     try:
-        zdat = zygo_reader.DatReader(path_or_file_like=full_path)
-        z = zdat.get_topography_nm()
+        topo = fl.read_zygo(full_path)
+        fwhm_m = float(fwhm_mm) / 1000.0 if fwhm_mm else 0.005
+        smoothed = topo.gauss_low_pass(fwhm_m=fwhm_m)
+        z = smoothed.z_map * 1e9  # nm
 
         z_min = float(np.nanmin(z))
         z_max = float(np.nanmax(z))
-        fig = _make_heatmap_fig(z, f"Original — {title_str}", DARK_RAINBOW, z_min, z_max)
+        fig = _make_heatmap_fig(
+            z, f"Original (Gauss {fwhm_mm}mm) — {title_str}", DARK_RAINBOW, z_min, z_max
+        )
         fig.update_layout(dragmode="select")
 
         return fig, full_path, title_str
@@ -1091,15 +1111,15 @@ def load_t2_original(selected_rows, data):
     Input("t2-original-graph", "selectedData"),
     Input("t2-full-path", "data"),
     State("t2-poly-degree", "value"),
+    State("t2-gauss-fwhm", "value"),
     prevent_initial_call=True,
 )
-def update_t2_cleaned(selected_data, full_path, degree):
+def update_t2_cleaned(selected_data, full_path, degree, fwhm_mm):
     """
     Update the Cleaned image.
 
-    - If no box is drawn: show a copy of the original (no changes).
-    - If a box is drawn: fit polynomial to pixels OUTSIDE the box,
-      replace pixels INSIDE the box with the polynomial prediction.
+    Loads file via fl.read_zygo, applies same Gaussian smoothing as Image 1,
+    then inpaints the selected box region with a polynomial fit.
     """
     empty_fig = go.Figure()
     empty_fig.update_layout(xaxis={"visible": False}, yaxis={"visible": False})
@@ -1107,12 +1127,11 @@ def update_t2_cleaned(selected_data, full_path, degree):
     if not full_path:
         return empty_fig, "Select a file from the table."
 
-    if not ZYGO_READER_AVAILABLE:
-        return empty_fig, "zygo_reader not installed"
-
     try:
-        zdat = zygo_reader.DatReader(path_or_file_like=full_path)
-        z = zdat.get_topography_nm()
+        topo = fl.read_zygo(full_path)
+        fwhm_m = float(fwhm_mm) / 1000.0 if fwhm_mm else 0.005
+        smoothed = topo.gauss_low_pass(fwhm_m=fwhm_m)
+        z = smoothed.z_map * 1e9  # nm
         n_rows, n_cols = z.shape
 
         z_min = float(np.nanmin(z))
@@ -1141,7 +1160,7 @@ def update_t2_cleaned(selected_data, full_path, degree):
 
                 fig = _make_heatmap_fig(
                     cleaned_z,
-                    f"Cleaned — {title_base}",
+                    f"Cleaned (Gauss {fwhm_mm}mm + poly deg {degree}) — {title_base}",
                     DARK_RAINBOW,
                     z_min,
                     z_max,
@@ -1149,12 +1168,14 @@ def update_t2_cleaned(selected_data, full_path, degree):
                 info = (
                     f"Selected region: rows {row_start}-{row_end}, "
                     f"cols {col_start}-{col_end} — "
-                    f"replaced with polynomial fit (degree {degree})"
+                    f"Gaussian {fwhm_mm}mm + polynomial inpaint (degree {degree})"
                 )
                 return fig, info
 
-        # No selection — show original as-is
-        fig = _make_heatmap_fig(z, f"Cleaned — {title_base} (no selection)", DARK_RAINBOW, z_min, z_max)
+        # No selection — show Gaussian-smoothed original
+        fig = _make_heatmap_fig(
+            z, f"Cleaned (Gauss {fwhm_mm}mm, no selection) — {title_base}", DARK_RAINBOW, z_min, z_max
+        )
         return fig, "Draw a box on the Original image to select the anomaly region."
 
     except Exception as e:

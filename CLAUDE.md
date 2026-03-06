@@ -292,19 +292,27 @@ Loaded via `zygo_reader.DatReader(path).get_topography_nm()`.
   5. **Image 2 — Cleaned (Anomaly Removed)** (DARK_RAINBOW, same z range as Original)
 
 ### How anomaly removal works
-1. User draws a rectangular box on Image 1
-2. `selectedData["range"]` gives `x` (columns) and `y` (rows) pixel ranges
-3. `inpaint_region(z, row_start, row_end, col_start, col_end, degree)` in `prediction.py`:
+1. File loaded via `fl.read_zygo(path)` → Topography object
+2. Gaussian smoothing: `topo.gauss_low_pass(fwhm_m=...)` applied first (controlled by FWHM slider)
+3. Both Image 1 and Image 2 show the Gaussian-smoothed data
+4. User draws a rectangular box on Image 1
+5. `selectedData["range"]` gives `x` (columns) and `y` (rows) pixel ranges
+6. `inpaint_region(z, row_start, row_end, col_start, col_end, degree)` in `prediction.py`:
    - Fits 2D polynomial to all valid pixels OUTSIDE the rectangle
    - Evaluates polynomial on full grid
-   - Returns `cleaned_z` = original with rectangle replaced by polynomial prediction
-4. Image 2 shows `cleaned_z` — the anomaly is gone, replaced by smooth surface
+   - Returns `cleaned_z` = smoothed original with rectangle replaced by polynomial prediction
+7. Image 2 shows `cleaned_z` — anomaly gone, replaced by smooth surface
+8. Changing FWHM slider re-renders both images with new smoothing level
+
+### Controls
+- **Poly degree** dropdown (1-6, default 5) — polynomial degree for inpainting
+- **Gauss FWHM slider** (1-20 mm, default 5) — Gaussian low-pass filter strength
 
 ### Key functions
 - `inpaint_region()` in `analysis/prediction.py` — rectangular polynomial inpainting
 - `filter_t2_table()` — side filter callback
-- `load_t2_original()` — row click → load file → display Image 1 + store fullPath
-- `update_t2_cleaned()` — box select or path change → compute cleaned Image 2
+- `load_t2_original()` — row click or FWHM change → load via `fl.read_zygo` + Gaussian → display Image 1
+- `update_t2_cleaned()` — box select or path change → load + Gaussian + inpaint → display Image 2
 
 ### Stores
 - `dcc.Store(id="t2-full-path")` — stores the full file path of the selected diff map
