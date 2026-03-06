@@ -1,23 +1,11 @@
+https://www.alphaxiv.org/abs/2409.05389?chatId=019cbd96-e86c-7790-b542-b55425011e51
 
-(wafer-dev-predictor) PS C:\Users\dmonacha\Downloads\learning_Hms\src\wafer_dev_predictor> uv sync                       
-Resolved 217 packages in 6ms
-      Built wafer-dev-predictor @ file:///C:/Users/dmonacha/Downloads/learning_Hms
-Prepared 1 package in 5.50s
-Uninstalled 1 package in 9ms
-Installed 1 package in 59ms
- ~ wafer-dev-predictor==0.1.0 (from file:///C:/Users/dmonacha/Downloads/learning_Hms)
-(wafer-dev-predictor) PS C:\Users\dmonacha\Downloads\learning_Hms\src\wafer_dev_predictor> uv run python -m wafer_dev_predictor.app
-Traceback (most recent call last):
-  File "<frozen runpy>", line 198, in _run_module_as_main
-  File "<frozen runpy>", line 88, in _run_code
-  File "C:\Users\dmonacha\Downloads\learning_Hms\src\wafer_dev_predictor\app.py", line 16, in <module>
-    import fastlibrary as fl
-ModuleNotFoundError: No module named 'fastlibrary'
-(wafer-dev-predictor) PS C:\Users\dmonacha\Downloads\learning_Hms\src\wafer_dev_predictor> py -3.11 app.py               
-C:\Program Files\Python311\Lib\site-packages\dash\dash.py:22: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  from pkg_resources import get_distribution, parse_version
-Traceback (most recent call last):
-  File "C:\Users\dmonacha\Downloads\learning_Hms\src\wafer_dev_predictor\app.py", line 19, in <module>
-    from wafer_dev_predictor.data.color_map import false_color_map_with_histogram
-ModuleNotFoundError: No module named 'wafer_dev_predictor'
-(wafer-dev-predictor) PS C:\Users\dmonacha\Downloads\learning_Hms\src\wafer_dev_predictor> 
+for the second tab what i want is that you create a table based on the diff_map_files_HI
+
+my ask : what i would want is that you look at the images and look for a way to remove the image anomaly from the image
+your steps : 
+1.load image on both the first and second place holder. based on the selection of the image loation from the table 
+2. the loaded image should be able to have a square selector run on the image to select the specific area where the user finds the anomaly.
+3. the image in the second place holder will auto update the region based on the selected square box in the first image dynamically.
+
+4. my current ask is can we remove the anomaly with a mathematically logic? or not.
