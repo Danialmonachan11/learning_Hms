@@ -670,31 +670,18 @@ app.layout = html.Div(
                                         ),
                                         # Image 1: Original Diff Map (Gaussian smoothed)
                                         html.Div(
-                                            [
-                                                html.Span(
-                                                    "Original Diff Map",
-                                                    style={"fontWeight": "bold", "fontSize": "13px"},
-                                                ),
-                                                html.Span(
-                                                    "  — draw a box to select the anomaly region",
-                                                    style={"fontSize": "12px", "color": "#666"},
-                                                ),
-                                            ],
-                                            style={"marginBottom": "2px"},
+                                            "Original Diff Map (Gaussian smoothed)",
+                                            style={"fontWeight": "bold", "fontSize": "13px", "marginBottom": "2px"},
                                         ),
                                         dcc.Loading(
                                             type="circle",
                                             children=dcc.Graph(
                                                 id="t2-original-graph",
                                                 style={"height": "280px"},
-                                                config={
-                                                    "responsive": True,
-                                                    "modeBarButtonsToAdd": ["select2d"],
-                                                    "displayModeBar": True,
-                                                },
+                                                config={"responsive": True},
                                             ),
                                         ),
-                                        # Selection info
+                                        # Info line
                                         html.Div(
                                             id="t2-selection-info",
                                             style={
@@ -704,9 +691,9 @@ app.layout = html.Div(
                                                 "fontStyle": "italic",
                                             },
                                         ),
-                                        # Image 2: Cleaned (anomaly removed)
+                                        # Image 2: Cleaned (IRLS robust poly — anomaly removed)
                                         html.Div(
-                                            "Cleaned (Anomaly Removed)",
+                                            "Cleaned (Anomaly Removed — IRLS Robust Poly)",
                                             style={
                                                 "fontWeight": "bold",
                                                 "fontSize": "13px",
@@ -1091,8 +1078,6 @@ def load_t2_original(selected_rows, fwhm_mm, data):
         fig = _make_heatmap_fig(
             z, f"Original (Gauss {fwhm_mm}mm) — {title_str}", DARK_RAINBOW, z_min, z_max
         )
-        fig.update_layout(dragmode="select")
-
         return fig, full_path, title_str
 
     except Exception as e:
@@ -1108,18 +1093,17 @@ def load_t2_original(selected_rows, fwhm_mm, data):
 @callback(
     Output("t2-cleaned-graph", "figure"),
     Output("t2-selection-info", "children"),
-    Input("t2-original-graph", "selectedData"),
     Input("t2-full-path", "data"),
-    State("t2-poly-degree", "value"),
-    State("t2-gauss-fwhm", "value"),
+    Input("t2-gauss-fwhm", "value"),
+    Input("t2-poly-degree", "value"),
     prevent_initial_call=True,
 )
-def update_t2_cleaned(selected_data, full_path, degree, fwhm_mm):
+def update_t2_cleaned(full_path, fwhm_mm, degree):
     """
     Update the Cleaned image.
 
-    Loads file via fl.read_zygo, applies same Gaussian smoothing as Image 1,
-    then inpaints the selected box region with a polynomial fit.
+    Loads file via fl.read_zygo, applies Gaussian smoothing, then runs
+    IRLS robust polynomial to remove the anomaly from the whole image.
     """
     empty_fig = go.Figure()
     empty_fig.update_layout(xaxis={"visible": False}, yaxis={"visible": False})
@@ -1132,51 +1116,35 @@ def update_t2_cleaned(selected_data, full_path, degree, fwhm_mm):
         fwhm_m = float(fwhm_mm) / 1000.0 if fwhm_mm else 0.005
         smoothed = topo.gauss_low_pass(fwhm_m=fwhm_m)
         z = smoothed.z_map * 1e9  # nm
-        n_rows, n_cols = z.shape
+
+        predicted_z, anomaly_z, metrics = predict_normal_robust_polynomial(
+            z,
+            degree=int(degree) if degree else 5,
+            n_iter=5,
+            k_sigma=2.0,
+        )
 
         z_min = float(np.nanmin(z))
         z_max = float(np.nanmax(z))
 
         title_base = os.path.basename(full_path)
-
-        if selected_data and "range" in selected_data:
-            x_range = selected_data["range"].get("x", [])
-            y_range = selected_data["range"].get("y", [])
-
-            if len(x_range) >= 2 and len(y_range) >= 2:
-                col_start = max(0, int(x_range[0]))
-                col_end = min(int(x_range[1]) + 1, n_cols)
-                row_start = max(0, int(min(y_range)))
-                row_end = min(int(max(y_range)) + 1, n_rows)
-
-                cleaned_z, _ = inpaint_region(
-                    z,
-                    row_start=row_start,
-                    row_end=row_end,
-                    col_start=col_start,
-                    col_end=col_end,
-                    degree=int(degree) if degree else 5,
-                )
-
-                fig = _make_heatmap_fig(
-                    cleaned_z,
-                    f"Cleaned (Gauss {fwhm_mm}mm + poly deg {degree}) — {title_base}",
-                    DARK_RAINBOW,
-                    z_min,
-                    z_max,
-                )
-                info = (
-                    f"Selected region: rows {row_start}-{row_end}, "
-                    f"cols {col_start}-{col_end} — "
-                    f"Gaussian {fwhm_mm}mm + polynomial inpaint (degree {degree})"
-                )
-                return fig, info
-
-        # No selection — show Gaussian-smoothed original
         fig = _make_heatmap_fig(
-            z, f"Cleaned (Gauss {fwhm_mm}mm, no selection) — {title_base}", DARK_RAINBOW, z_min, z_max
+            predicted_z,
+            f"Cleaned (Gauss {fwhm_mm}mm + IRLS deg {degree}) — {title_base}",
+            DARK_RAINBOW,
+            z_min,
+            z_max,
         )
-        return fig, "Draw a box on the Original image to select the anomaly region."
+
+        m = metrics
+        info = (
+            f"Gauss {fwhm_mm}mm + IRLS robust poly (deg {degree})  |  "
+            f"RMS: {m['rms_nm']:.1f} nm  |  "
+            f"PV: {m['pv_nm']:.1f} nm  |  "
+            f"Max |dev|: {m['max_nm']:.1f} nm  |  "
+            f"Anomaly area: {m['anomaly_area_pct']:.0f}%"
+        )
+        return fig, info
 
     except Exception as e:
         err_fig = go.Figure()
