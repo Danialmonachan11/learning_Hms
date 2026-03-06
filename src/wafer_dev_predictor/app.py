@@ -670,15 +670,28 @@ app.layout = html.Div(
                                         ),
                                         # Image 1: Original Diff Map (Gaussian smoothed)
                                         html.Div(
-                                            "Original Diff Map (Gaussian smoothed)",
-                                            style={"fontWeight": "bold", "fontSize": "13px", "marginBottom": "2px"},
+                                            [
+                                                html.Span(
+                                                    "Original Diff Map (Gaussian smoothed)",
+                                                    style={"fontWeight": "bold", "fontSize": "13px"},
+                                                ),
+                                                html.Span(
+                                                    "  — draw a box to measure anomaly deviation",
+                                                    style={"fontSize": "12px", "color": "#666"},
+                                                ),
+                                            ],
+                                            style={"marginBottom": "2px"},
                                         ),
                                         dcc.Loading(
                                             type="circle",
                                             children=dcc.Graph(
                                                 id="t2-original-graph",
                                                 style={"height": "280px"},
-                                                config={"responsive": True},
+                                                config={
+                                                    "responsive": True,
+                                                    "modeBarButtonsToAdd": ["select2d"],
+                                                    "displayModeBar": True,
+                                                },
                                             ),
                                         ),
                                         # Info line
@@ -708,6 +721,20 @@ app.layout = html.Div(
                                                 style={"height": "280px"},
                                                 config={"responsive": True},
                                             ),
+                                        ),
+                                        # Region metrics panel
+                                        html.Div(
+                                            id="t2-region-metrics",
+                                            style={
+                                                "padding": "10px 8px",
+                                                "marginTop": "8px",
+                                                "backgroundColor": "#f8f9fa",
+                                                "borderRadius": "6px",
+                                                "border": "1px solid #dee2e6",
+                                                "fontSize": "13px",
+                                                "color": "#333",
+                                                "whiteSpace": "pre-line",
+                                            },
                                         ),
                                     ],
                                 ),
@@ -1078,6 +1105,7 @@ def load_t2_original(selected_rows, fwhm_mm, data):
         fig = _make_heatmap_fig(
             z, f"Original (Gauss {fwhm_mm}mm) — {title_str}", DARK_RAINBOW, z_min, z_max
         )
+        fig.update_layout(dragmode="select")
         return fig, full_path, title_str
 
     except Exception as e:
@@ -1154,6 +1182,111 @@ def update_t2_cleaned(full_path, fwhm_mm, degree):
             yaxis={"visible": False},
         )
         return err_fig, f"Error: {e}"
+
+
+@callback(
+    Output("t2-region-metrics", "children"),
+    Input("t2-original-graph", "selectedData"),
+    State("t2-full-path", "data"),
+    State("t2-gauss-fwhm", "value"),
+    State("t2-poly-degree", "value"),
+    prevent_initial_call=True,
+)
+def compute_t2_region_metrics(selected_data, full_path, fwhm_mm, degree):
+    """
+    When user draws a box on Image 1, compute anomaly metrics for that region
+    by comparing the smoothed original vs the IRLS baseline in the same area.
+    """
+    if not full_path:
+        return "Select a file, then draw a box on the Original image to measure."
+
+    if not selected_data or "range" not in selected_data:
+        return "Draw a box on the Original image to measure anomaly deviation in that region."
+
+    x_range = selected_data["range"].get("x", [])
+    y_range = selected_data["range"].get("y", [])
+    if len(x_range) < 2 or len(y_range) < 2:
+        return "Draw a box on the Original image to measure anomaly deviation in that region."
+
+    try:
+        topo = fl.read_zygo(full_path)
+        fwhm_m = float(fwhm_mm) / 1000.0 if fwhm_mm else 0.005
+        smoothed = topo.gauss_low_pass(fwhm_m=fwhm_m)
+        z = smoothed.z_map * 1e9  # nm
+        n_rows, n_cols = z.shape
+
+        predicted_z, _, _ = predict_normal_robust_polynomial(
+            z, degree=int(degree) if degree else 5, n_iter=5, k_sigma=2.0
+        )
+
+        col_start = max(0, int(x_range[0]))
+        col_end = min(int(x_range[1]) + 1, n_cols)
+        row_start = max(0, int(min(y_range)))
+        row_end = min(int(max(y_range)) + 1, n_rows)
+
+        # Deviation = smoothed original minus cleaned baseline in the selected box
+        original_region = z[row_start:row_end, col_start:col_end]
+        baseline_region = predicted_z[row_start:row_end, col_start:col_end]
+        deviation = original_region - baseline_region
+
+        valid = deviation[~np.isnan(deviation)]
+        if valid.size == 0:
+            return "No valid pixels in the selected region."
+
+        # --- Metrics ---
+        pv = float(np.max(valid) - np.min(valid))
+        rms = float(np.sqrt(np.mean(valid ** 2)))
+        mean_dev = float(np.mean(valid))
+        max_abs = float(np.max(np.abs(valid)))
+        std_dev = float(np.std(valid))
+
+        # Anomaly area: pixels exceeding 10nm threshold
+        threshold_nm = 10.0
+        n_above = int(np.sum(np.abs(valid) > threshold_nm))
+        pct_above = float(n_above / valid.size * 100)
+
+        # Volume: integral of |deviation| over area (nm·mm²)
+        # Pixel size from known dimensions: 442mm × 28mm for typical 705×44 images
+        physical_w_mm = 442.0
+        physical_h_mm = 28.0
+        pixel_w_mm = physical_w_mm / max(n_cols, 1)
+        pixel_h_mm = physical_h_mm / max(n_rows, 1)
+        pixel_area_mm2 = pixel_w_mm * pixel_h_mm
+        volume = float(np.sum(np.abs(valid)) * pixel_area_mm2)
+
+        # Box physical size
+        box_w_mm = (col_end - col_start) * pixel_w_mm
+        box_h_mm = (row_end - row_start) * pixel_h_mm
+        box_area_mm2 = box_w_mm * box_h_mm
+        anomaly_area_mm2 = n_above * pixel_area_mm2
+
+        # Gradient: max absolute gradient at edges of the anomaly
+        grad_y, grad_x = np.gradient(deviation)
+        grad_valid = np.sqrt(grad_x ** 2 + grad_y ** 2)
+        grad_valid = grad_valid[~np.isnan(grad_valid)]
+        max_gradient = float(np.max(grad_valid)) if grad_valid.size > 0 else 0.0
+
+        # Direction: bump or dip
+        direction = "bump (+)" if mean_dev > 0 else "dip (−)" if mean_dev < 0 else "flat"
+
+        lines = [
+            f"Region: rows {row_start}–{row_end}, cols {col_start}–{col_end}  "
+            f"({box_w_mm:.1f} × {box_h_mm:.1f} mm = {box_area_mm2:.1f} mm²)",
+            "",
+            f"  PV (Peak-to-Valley):   {pv:.1f} nm",
+            f"  RMS:                   {rms:.1f} nm",
+            f"  Mean deviation:        {mean_dev:+.1f} nm  ({direction})",
+            f"  Max |deviation|:       {max_abs:.1f} nm",
+            f"  Std deviation:         {std_dev:.1f} nm",
+            "",
+            f"  Anomaly area (>{threshold_nm:.0f}nm):  {anomaly_area_mm2:.1f} mm²  ({pct_above:.1f}% of box)",
+            f"  Anomaly volume:        {volume:.1f} nm·mm²",
+            f"  Max gradient:          {max_gradient:.1f} nm/pixel",
+        ]
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error computing metrics: {e}"
 
 
 # ---------------------------------------------------------------------------
