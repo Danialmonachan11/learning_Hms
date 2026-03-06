@@ -231,6 +231,47 @@ def predict_normal_robust_polynomial(
     return predicted_z, anomaly_z, metrics
 
 
+def inpaint_region(
+    z: np.ndarray,
+    row_start: int,
+    row_end: int,
+    col_start: int,
+    col_end: int,
+    degree: int = 5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Replace a rectangular region with a polynomial surface fit from surrounding pixels.
+
+    Fits a 2D polynomial to all valid pixels OUTSIDE the rectangle, then
+    evaluates it on the full grid. Returns the cleaned image (original with
+    rectangle replaced by polynomial prediction) and the full predicted surface.
+    """
+    n_rows, n_cols = z.shape
+    row_idx, col_idx = np.mgrid[0:n_rows, 0:n_cols]
+
+    clean_mask = np.ones((n_rows, n_cols), dtype=bool)
+    clean_mask[row_start:row_end, col_start:col_end] = False
+    clean_mask &= ~np.isnan(z)
+
+    clean_rows = row_idx[clean_mask].astype(float)
+    clean_cols = col_idx[clean_mask].astype(float)
+    clean_z = z[clean_mask]
+
+    A_clean = _poly_design_matrix(clean_rows, clean_cols, n_rows, n_cols, degree)
+    coeffs, _, _, _ = linalg.lstsq(A_clean, clean_z)
+
+    all_rows = row_idx.flatten().astype(float)
+    all_cols = col_idx.flatten().astype(float)
+    A_full = _poly_design_matrix(all_rows, all_cols, n_rows, n_cols, degree)
+    predicted_z = (A_full @ coeffs).reshape(n_rows, n_cols)
+    predicted_z = np.where(np.isnan(z), np.nan, predicted_z)
+
+    cleaned_z = z.copy()
+    cleaned_z[row_start:row_end, col_start:col_end] = predicted_z[row_start:row_end, col_start:col_end]
+
+    return cleaned_z, predicted_z
+
+
 def predict_normal_gaussian(
     topo: "fl.Topography",
     fwhm_m: float = 0.005,

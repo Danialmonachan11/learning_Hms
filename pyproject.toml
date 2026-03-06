@@ -37,6 +37,10 @@ dependencies = [
     
     # Web App
     "dash>=2.14.0",
+    "plotly>=5.0.0",
+
+    # Zygo file reader (for generated_files diff maps)
+    "zygo_reader",
 
     # Utilities
     "pyyaml>=6.0",

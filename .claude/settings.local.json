@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "WebFetch(domain:www.alphaxiv.org)",
+      "Bash(python:*)"
     ]
   }
 }

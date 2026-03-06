@@ -9,13 +9,13 @@
 Generate false-color maps including a histogram of PointCloud data using Plotly. 
 """
 
-__author__ = "Andreas Ahlrichs [ASML]"
+__author__ = " []"
 # History
-# 2025-07-22: v1.0 Andreas Ahlrichs - initial release
+# 2025-07-22: v1.0  - initial release
 #
 # -----------------------------------------------------------------------------#
 #                                                                              #
-#                Copyright (c) 2025, ASML Netherlands B.V.                     #
+#                Copyright (c) 2025,  Netherlands B.V.                     #
 #                         All rights reserved                                  #
 #                                                                              #
 # -----------------------------------------------------------------------------#

@@ -14,14 +14,30 @@ Tab 2 — Anomaly Analysis:
       - Polynomial: manual region selection via box-draw on the original image.
       - Gaussian: global low-pass filter via fastlibrary.
 
+Tab 3 — Diff Map Browser:
+    Browse pre-computed step-to-step difference maps from generated_files.parquet
+    (loaded via zygo_reader). Each click shows 3 stacked images:
+      - Raw diff map (as stored)
+      - IRLS process baseline (smooth component)
+      - Anomaly signal (diff − baseline)
+    Label buttons save Normal/Anomaly/Skip to labeled_diff_maps.parquet.
+
 Run with: py -3.11 app.py  (from src/wafer_dev_predictor/ directory)
 """
 
+import os
+import re
 import sys
 from pathlib import Path
 
 # Allow bare imports of color_map / color_scale and analysis subpackage
 sys.path.insert(0, str(Path(__file__).parent / "data"))
+
+try:
+    import zygo_reader
+    ZYGO_READER_AVAILABLE = True
+except ImportError:
+    ZYGO_READER_AVAILABLE = False
 
 import numpy as np
 import dash
@@ -37,6 +53,7 @@ from analysis.prediction import (
     predict_normal_polynomial,
     predict_normal_robust_polynomial,
     predict_normal_gaussian,
+    inpaint_region,
 )
 
 # ---------------------------------------------------------------------------
@@ -47,6 +64,14 @@ DATABASE_PATH = (
     R"\Flatness Reports\MiQaT_Specification_Data.parquet"
 )
 LABELED_DB_PATH = Path("data/labeled_measurements.parquet")
+
+# Diff map database (generated_files.parquet — pre-computed step-to-step diffs)
+DIFF_DB_PATH = (
+    R"T:\asm\E X E_MB\10-EXE_MB_Flatness_Database"
+    R"\.db\Generated Files\generated_files.parquet"
+)
+DIFF_DB_ROOT = R"T:\asm\E X E_MB\10-EXE_MB_Flatness_Database"
+LABELED_DIFF_PATH = Path("data/labeled_diff_maps.parquet")
 
 # ---------------------------------------------------------------------------
 # Data loading (mirrors Database_ZA_ZE.py logic)
@@ -97,10 +122,104 @@ def load_or_init_labels(measurements: pl.DataFrame) -> pl.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Diff map helpers (Tab 3)
+# ---------------------------------------------------------------------------
+
+_SIDE_RE = re.compile(r"\b(Z[EA])\b")
+_DATE_RE = re.compile(r"(\d{6})")
+
+
+def _extract_side_from_path(fpath: str) -> str:
+    m = _SIDE_RE.search(fpath.replace("\\", "/").split("/")[-1])
+    return m.group(1) if m else "?"
+
+
+def _extract_date_from_path(fpath: str) -> str:
+    parts = fpath.replace("\\", "/").split("/")
+    # The folder under "Difference plots/" typically starts with YYMMDD
+    for part in reversed(parts):
+        m = _DATE_RE.match(part.strip())
+        if m:
+            raw = m.group(1)
+            return f"20{raw[:2]}-{raw[2:4]}-{raw[4:]}"
+    return ""
+
+
+def load_diff_maps() -> pl.DataFrame:
+    """
+    Load and filter the generated_files.parquet to the ZA/ZE HI-bonding diff maps.
+
+    Returns a DataFrame with columns:
+        filePath, fullPath, Side, DateStr, Label (null initially)
+    """
+    gen = pl.read_parquet(DIFF_DB_PATH)
+    filtered = gen.filter(
+        (pl.col("description") == "Side difference map - Zygo file")
+        & pl.col("filePath").str.contains(r".*Z.*HI.*coating")
+    )
+    paths = filtered["filePath"].to_list()
+    sides = [_extract_side_from_path(p) for p in paths]
+    dates = [_extract_date_from_path(p) for p in paths]
+    full_paths = [os.path.join(DIFF_DB_ROOT, p) for p in paths]
+
+    return pl.DataFrame(
+        {
+            "filePath": paths,
+            "fullPath": full_paths,
+            "Side": sides,
+            "DateStr": dates,
+            "Label": [None] * len(paths),
+        }
+    )
+
+
+def load_or_init_diff_labels(diff_df: pl.DataFrame) -> pl.DataFrame:
+    """Merge saved labels into the diff map DataFrame."""
+    if LABELED_DIFF_PATH.exists():
+        saved = pl.read_parquet(LABELED_DIFF_PATH)
+        diff_df = diff_df.join(
+            saved.select(["filePath", "Label"]),
+            on="filePath",
+            how="left",
+            suffix="_saved",
+        )
+        # Coalesce: prefer the saved label
+        if "Label_saved" in diff_df.columns:
+            diff_df = diff_df.with_columns(
+                pl.coalesce([pl.col("Label_saved"), pl.col("Label")]).alias("Label")
+            ).drop("Label_saved")
+    return diff_df
+
+
+def _save_diff_labels(data: list[dict]) -> None:
+    """Persist diff map labels to parquet."""
+    import pandas as pd
+
+    LABELED_DIFF_PATH.parent.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(data)
+    labeled = df[df["Label"].notna() & (df["Label"] != "")]
+    if not labeled.empty:
+        labeled[["filePath", "Label"]].to_parquet(LABELED_DIFF_PATH, index=False)
+
+
+# ---------------------------------------------------------------------------
 # Initialise data
 # ---------------------------------------------------------------------------
 measurements_df = load_measurements()
 measurements_df = load_or_init_labels(measurements_df)
+
+# Diff map database (Tab 3) — may not be available on all machines
+diff_maps_df: pl.DataFrame = pl.DataFrame(
+    {"filePath": [], "fullPath": [], "Side": [], "DateStr": [], "Label": []}
+)
+diff_maps_available = False
+try:
+    diff_maps_df = load_diff_maps()
+    diff_maps_df = load_or_init_diff_labels(diff_maps_df)
+    diff_maps_available = True
+    print(f"[Tab 3] Loaded {len(diff_maps_df)} diff maps.")
+except Exception as _diff_err:
+    print(f"[Tab 3] Diff map DB not available: {_diff_err}")
 
 # Convert to list-of-dicts for the Dash DataTable
 table_data = measurements_df.to_pandas().to_dict("records")
@@ -113,26 +232,25 @@ table_columns = [
     {"name": "Label", "id": "Label"},
 ]
 
-# ---------------------------------------------------------------------------
-# Tab 2 — Pre-compute dropdown options
-# ---------------------------------------------------------------------------
-_serials = sorted(measurements_df["Serial"].unique().to_list())
-_serial_options = [{"label": s, "value": s} for s in _serials]
-_initial_serial = _serials[0] if _serials else None
+# Tab 3 — Diff map table
+diff_table_data = diff_maps_df.to_pandas().to_dict("records")
+diff_table_columns = [
+    {"name": "Side", "id": "Side"},
+    {"name": "Date", "id": "DateStr"},
+    {"name": "File", "id": "filePath"},
+    {"name": "Label", "id": "Label"},
+]
+_diff_side_options = [{"label": "All", "value": "All"}, {"label": "ZA", "value": "ZA"}, {"label": "ZE", "value": "ZE"}]
 
-_process_steps_init = (
-    sorted(
-        measurements_df.filter(
-            (pl.col("Serial") == _initial_serial) & (pl.col("Side") == "ZA")
-        )["ProcessStep"]
-        .unique()
-        .to_list()
-    )
-    if _initial_serial
-    else []
-)
-_init_step_opts = [{"label": s, "value": s} for s in _process_steps_init]
-_init_step_val = _process_steps_init[0] if _process_steps_init else None
+# ---------------------------------------------------------------------------
+# Tab 2 — Diff map table data (separate copy from Tab 3)
+# ---------------------------------------------------------------------------
+t2_diff_table_data = [dict(r) for r in diff_table_data]
+t2_diff_table_columns = [
+    {"name": "Side", "id": "Side"},
+    {"name": "Date", "id": "DateStr"},
+    {"name": "File", "id": "filePath"},
+]
 
 
 # ---------------------------------------------------------------------------
@@ -406,239 +524,406 @@ app.layout = html.Div(
                     ],
                 ),
                 # ================================================================
-                # TAB 2 — Anomaly Analysis
+                # TAB 2 — Anomaly Removal
                 # ================================================================
                 dcc.Tab(
-                    label="Anomaly Analysis",
+                    label="Anomaly Removal",
                     children=[
                         html.Div(
-                            style={"padding": "10px"},
+                            style={
+                                "display": "flex",
+                                "flexDirection": "row",
+                                "alignItems": "flex-start",
+                                "paddingTop": "10px",
+                                "height": "calc(100vh - 130px)",
+                            },
                             children=[
-                                # ---- Controls row ----
+                                # ---- Left: filters + table ----
                                 html.Div(
                                     style={
+                                        "width": "38%",
+                                        "paddingRight": "12px",
+                                        "boxSizing": "border-box",
                                         "display": "flex",
-                                        "flexWrap": "wrap",
-                                        "gap": "16px",
-                                        "alignItems": "flex-end",
-                                        "padding": "10px 0 16px 0",
-                                        "borderBottom": "1px solid #ddd",
+                                        "flexDirection": "column",
+                                        "height": "100%",
                                     },
                                     children=[
-                                        # Serial
                                         html.Div(
-                                            [
-                                                html.Div("Serial", style=CTRL_LABEL_STYLE),
-                                                dcc.Dropdown(
-                                                    id="t2-serial",
-                                                    options=_serial_options,
-                                                    value=_initial_serial,
-                                                    clearable=False,
-                                                    style={"minWidth": "140px"},
-                                                ),
-                                            ]
-                                        ),
-                                        # Side
-                                        html.Div(
-                                            [
-                                                html.Div("Side", style=CTRL_LABEL_STYLE),
-                                                dcc.RadioItems(
-                                                    id="t2-side",
-                                                    options=[
-                                                        {"label": " ZA", "value": "ZA"},
-                                                        {"label": " ZE", "value": "ZE"},
-                                                    ],
-                                                    value="ZA",
-                                                    inline=True,
-                                                    inputStyle={"marginRight": "4px"},
-                                                    labelStyle={"marginRight": "12px"},
-                                                ),
-                                            ]
-                                        ),
-                                        # Process Step
-                                        html.Div(
-                                            [
-                                                html.Div("Process Step", style=CTRL_LABEL_STYLE),
-                                                dcc.Dropdown(
-                                                    id="t2-process-step",
-                                                    options=_init_step_opts,
-                                                    value=_init_step_val,
-                                                    clearable=False,
-                                                    style={"minWidth": "200px"},
-                                                ),
-                                            ]
-                                        ),
-                                        # Method
-                                        html.Div(
-                                            [
-                                                html.Div("Method", style=CTRL_LABEL_STYLE),
-                                                dcc.RadioItems(
-                                                    id="t2-method",
-                                                    options=[
-                                                        {
-                                                            "label": " Robust Poly ★",
-                                                            "value": "RobustPoly",
-                                                        },
-                                                        {
-                                                            "label": " Polynomial",
-                                                            "value": "Polynomial",
-                                                        },
-                                                        {
-                                                            "label": " Gaussian",
-                                                            "value": "Gaussian",
-                                                        },
-                                                    ],
-                                                    value="RobustPoly",
-                                                    inline=True,
-                                                    inputStyle={"marginRight": "4px"},
-                                                    labelStyle={"marginRight": "12px"},
-                                                ),
-                                                html.Div(
-                                                    "★ fits whole image automatically — box-select only used by Polynomial",
-                                                    style={"fontSize": "11px", "color": "#888", "marginTop": "2px"},
-                                                ),
-                                            ]
-                                        ),
-                                        # Poly degree
-                                        html.Div(
-                                            [
-                                                html.Div("Poly degree", style=CTRL_LABEL_STYLE),
-                                                dcc.Dropdown(
-                                                    id="t2-poly-degree",
-                                                    options=[
-                                                        {"label": str(d), "value": d}
-                                                        for d in [1, 2, 3, 4, 5, 6]
-                                                    ],
-                                                    value=5,
-                                                    clearable=False,
-                                                    style={"width": "80px"},
-                                                ),
-                                            ]
-                                        ),
-                                        # Gauss FWHM slider
-                                        html.Div(
-                                            style={"minWidth": "220px"},
+                                            style={
+                                                "display": "flex",
+                                                "gap": "12px",
+                                                "alignItems": "flex-end",
+                                                "marginBottom": "8px",
+                                            },
                                             children=[
                                                 html.Div(
-                                                    "Gauss FWHM (mm)", style=CTRL_LABEL_STYLE
+                                                    [
+                                                        html.Div("Side", style=CTRL_LABEL_STYLE),
+                                                        dcc.Dropdown(
+                                                            id="t2-side-filter",
+                                                            options=_diff_side_options,
+                                                            value="All",
+                                                            clearable=False,
+                                                            style={"minWidth": "90px"},
+                                                        ),
+                                                    ]
                                                 ),
-                                                dcc.Slider(
-                                                    id="t2-gauss-fwhm",
-                                                    min=1,
-                                                    max=20,
-                                                    step=0.5,
-                                                    value=5,
-                                                    marks={1: "1", 5: "5", 10: "10", 20: "20"},
-                                                    tooltip={
-                                                        "placement": "bottom",
-                                                        "always_visible": True,
-                                                    },
+                                                html.Div(
+                                                    id="t2-count",
+                                                    style={"fontSize": "12px", "color": "#666", "paddingBottom": "4px"},
                                                 ),
                                             ],
                                         ),
-                                        # Analyse button
-                                        html.Button(
-                                            "Analyse",
-                                            id="t2-analyse-btn",
-                                            n_clicks=0,
+                                        html.Div(
+                                            dash_table.DataTable(
+                                                id="t2-diff-table",
+                                                columns=t2_diff_table_columns,
+                                                data=t2_diff_table_data,
+                                                row_selectable="single",
+                                                selected_rows=[],
+                                                filter_action="native",
+                                                sort_action="native",
+                                                page_action="none",
+                                                fixed_rows={"headers": True},
+                                                style_table={
+                                                    "height": "calc(100vh - 220px)",
+                                                    "overflowY": "auto",
+                                                    "overflowX": "auto",
+                                                },
+                                                style_cell={
+                                                    "textAlign": "left",
+                                                    "padding": "5px 8px",
+                                                    "fontSize": "12px",
+                                                    "whiteSpace": "nowrap",
+                                                    "overflow": "hidden",
+                                                    "textOverflow": "ellipsis",
+                                                    "maxWidth": "180px",
+                                                },
+                                                style_header={
+                                                    "fontWeight": "bold",
+                                                    "backgroundColor": "#e8e8e8",
+                                                    "position": "sticky",
+                                                    "top": 0,
+                                                },
+                                                tooltip_data=[
+                                                    {"filePath": {"value": str(row.get("filePath", "")), "type": "markdown"}}
+                                                    for row in t2_diff_table_data
+                                                ],
+                                                tooltip_duration=None,
+                                            ),
+                                            style={"flex": "1"},
+                                        ),
+                                    ],
+                                ),
+                                # ---- Right: 2 images + controls ----
+                                html.Div(
+                                    style={
+                                        "width": "62%",
+                                        "boxSizing": "border-box",
+                                        "overflowY": "auto",
+                                        "height": "100%",
+                                    },
+                                    children=[
+                                        html.Div(
+                                            id="t2-file-title",
+                                            style={"fontSize": "13px", "fontWeight": "bold", "marginBottom": "6px", "color": "#333"},
+                                        ),
+                                        # Controls row
+                                        html.Div(
+                                            style={"display": "flex", "gap": "16px", "alignItems": "flex-end", "marginBottom": "8px"},
+                                            children=[
+                                                html.Div(
+                                                    [
+                                                        html.Div("Poly degree", style=CTRL_LABEL_STYLE),
+                                                        dcc.Dropdown(
+                                                            id="t2-poly-degree",
+                                                            options=[
+                                                                {"label": str(d), "value": d}
+                                                                for d in [1, 2, 3, 4, 5, 6]
+                                                            ],
+                                                            value=5,
+                                                            clearable=False,
+                                                            style={"width": "80px"},
+                                                        ),
+                                                    ]
+                                                ),
+                                            ],
+                                        ),
+                                        # Image 1: Original Diff Map
+                                        html.Div(
+                                            [
+                                                html.Span(
+                                                    "Original Diff Map",
+                                                    style={"fontWeight": "bold", "fontSize": "13px"},
+                                                ),
+                                                html.Span(
+                                                    "  — draw a box to select the anomaly region",
+                                                    style={"fontSize": "12px", "color": "#666"},
+                                                ),
+                                            ],
+                                            style={"marginBottom": "2px"},
+                                        ),
+                                        dcc.Loading(
+                                            type="circle",
+                                            children=dcc.Graph(
+                                                id="t2-original-graph",
+                                                style={"height": "280px"},
+                                                config={
+                                                    "responsive": True,
+                                                    "modeBarButtonsToAdd": ["select2d"],
+                                                    "displayModeBar": True,
+                                                },
+                                            ),
+                                        ),
+                                        # Selection info
+                                        html.Div(
+                                            id="t2-selection-info",
                                             style={
-                                                **BTN_STYLE,
-                                                "backgroundColor": "#007bff",
-                                                "alignSelf": "flex-end",
+                                                "padding": "6px 4px",
+                                                "fontSize": "13px",
+                                                "color": "#555",
+                                                "fontStyle": "italic",
+                                            },
+                                        ),
+                                        # Image 2: Cleaned (anomaly removed)
+                                        html.Div(
+                                            "Cleaned (Anomaly Removed)",
+                                            style={
+                                                "fontWeight": "bold",
+                                                "fontSize": "13px",
+                                                "marginTop": "8px",
+                                                "marginBottom": "2px",
+                                            },
+                                        ),
+                                        dcc.Loading(
+                                            type="circle",
+                                            children=dcc.Graph(
+                                                id="t2-cleaned-graph",
+                                                style={"height": "280px"},
+                                                config={"responsive": True},
+                                            ),
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+                # ================================================================
+                # TAB 3 — Diff Map Browser
+                # ================================================================
+                dcc.Tab(
+                    label="Diff Map Browser",
+                    children=[
+                        html.Div(
+                            style={
+                                "display": "flex",
+                                "flexDirection": "row",
+                                "alignItems": "flex-start",
+                                "paddingTop": "10px",
+                                "height": "calc(100vh - 130px)",
+                            },
+                            children=[
+                                # ---- Left: filters + table ----
+                                html.Div(
+                                    style={
+                                        "width": "38%",
+                                        "paddingRight": "12px",
+                                        "boxSizing": "border-box",
+                                        "display": "flex",
+                                        "flexDirection": "column",
+                                        "height": "100%",
+                                    },
+                                    children=[
+                                        # Filter row
+                                        html.Div(
+                                            style={
+                                                "display": "flex",
+                                                "gap": "12px",
+                                                "alignItems": "flex-end",
+                                                "marginBottom": "8px",
+                                            },
+                                            children=[
+                                                html.Div(
+                                                    [
+                                                        html.Div("Side", style=CTRL_LABEL_STYLE),
+                                                        dcc.Dropdown(
+                                                            id="t3-side-filter",
+                                                            options=_diff_side_options,
+                                                            value="All",
+                                                            clearable=False,
+                                                            style={"minWidth": "90px"},
+                                                        ),
+                                                    ]
+                                                ),
+                                                html.Div(
+                                                    id="t3-count",
+                                                    style={"fontSize": "12px", "color": "#666", "paddingBottom": "4px"},
+                                                ),
+                                            ],
+                                        ),
+                                        # Table
+                                        html.Div(
+                                            dash_table.DataTable(
+                                                id="t3-diff-table",
+                                                columns=diff_table_columns,
+                                                data=diff_table_data,
+                                                row_selectable="single",
+                                                selected_rows=[],
+                                                filter_action="native",
+                                                sort_action="native",
+                                                page_action="none",
+                                                fixed_rows={"headers": True},
+                                                style_table={
+                                                    "height": "calc(100vh - 220px)",
+                                                    "overflowY": "auto",
+                                                    "overflowX": "auto",
+                                                },
+                                                style_cell={
+                                                    "textAlign": "left",
+                                                    "padding": "5px 8px",
+                                                    "fontSize": "12px",
+                                                    "whiteSpace": "nowrap",
+                                                    "overflow": "hidden",
+                                                    "textOverflow": "ellipsis",
+                                                    "maxWidth": "180px",
+                                                },
+                                                style_header={
+                                                    "fontWeight": "bold",
+                                                    "backgroundColor": "#e8e8e8",
+                                                    "position": "sticky",
+                                                    "top": 0,
+                                                },
+                                                style_data_conditional=[
+                                                    {
+                                                        "if": {"filter_query": '{Label} = "Normal"'},
+                                                        "backgroundColor": "#d4edda",
+                                                    },
+                                                    {
+                                                        "if": {"filter_query": '{Label} = "Anomaly"'},
+                                                        "backgroundColor": "#f8d7da",
+                                                    },
+                                                    {
+                                                        "if": {"filter_query": '{Label} = "Skip"'},
+                                                        "backgroundColor": "#fff3cd",
+                                                    },
+                                                ],
+                                                tooltip_data=[
+                                                    {"filePath": {"value": str(row.get("filePath", "")), "type": "markdown"}}
+                                                    for row in diff_table_data
+                                                ],
+                                                tooltip_duration=None,
+                                            ),
+                                            style={"flex": "1"},
+                                        ),
+                                    ],
+                                ),
+                                # ---- Right: 3 images + label buttons ----
+                                html.Div(
+                                    style={
+                                        "width": "62%",
+                                        "boxSizing": "border-box",
+                                        "overflowY": "auto",
+                                        "height": "100%",
+                                    },
+                                    children=[
+                                        html.Div(
+                                            id="t3-file-title",
+                                            style={"fontSize": "13px", "fontWeight": "bold", "marginBottom": "6px", "color": "#333"},
+                                        ),
+                                        # Raw diff
+                                        html.Div(
+                                            "Raw Diff Map",
+                                            style={"fontWeight": "bold", "fontSize": "13px", "marginBottom": "2px"},
+                                        ),
+                                        dcc.Loading(
+                                            type="circle",
+                                            children=dcc.Graph(
+                                                id="t3-raw-graph",
+                                                style={"height": "240px"},
+                                                config={"responsive": True},
+                                            ),
+                                        ),
+                                        # IRLS baseline
+                                        html.Div(
+                                            "Process Baseline (IRLS Robust Poly)",
+                                            style={"fontWeight": "bold", "fontSize": "13px", "marginTop": "8px", "marginBottom": "2px"},
+                                        ),
+                                        dcc.Loading(
+                                            type="circle",
+                                            children=dcc.Graph(
+                                                id="t3-baseline-graph",
+                                                style={"height": "240px"},
+                                                config={"responsive": True},
+                                            ),
+                                        ),
+                                        # Anomaly signal
+                                        html.Div(
+                                            "Anomaly Signal (diff − baseline)",
+                                            style={"fontWeight": "bold", "fontSize": "13px", "marginTop": "8px", "marginBottom": "2px"},
+                                        ),
+                                        dcc.Loading(
+                                            type="circle",
+                                            children=dcc.Graph(
+                                                id="t3-anomaly-graph",
+                                                style={"height": "240px"},
+                                                config={"responsive": True},
+                                            ),
+                                        ),
+                                        # Metrics
+                                        html.Div(
+                                            id="t3-metrics",
+                                            style={
+                                                "padding": "8px 4px",
+                                                "fontSize": "13px",
+                                                "fontWeight": "bold",
+                                                "color": "#333",
+                                            },
+                                        ),
+                                        # Label buttons
+                                        html.Div(
+                                            [
+                                                html.Button(
+                                                    "Normal",
+                                                    id="t3-btn-normal",
+                                                    n_clicks=0,
+                                                    style={**BTN_STYLE, "backgroundColor": "#28a745"},
+                                                ),
+                                                html.Button(
+                                                    "Anomaly",
+                                                    id="t3-btn-anomaly",
+                                                    n_clicks=0,
+                                                    style={**BTN_STYLE, "backgroundColor": "#dc3545"},
+                                                ),
+                                                html.Button(
+                                                    "Skip",
+                                                    id="t3-btn-skip",
+                                                    n_clicks=0,
+                                                    style={**BTN_STYLE, "backgroundColor": "#6c757d"},
+                                                ),
+                                            ],
+                                            style={"paddingTop": "8px"},
+                                        ),
+                                        html.Div(
+                                            id="t3-label-status",
+                                            style={
+                                                "padding": "6px 4px",
+                                                "fontSize": "13px",
+                                                "fontWeight": "bold",
+                                                "color": "#555",
                                             },
                                         ),
                                     ],
                                 ),
-                                # ---- Original image ----
-                                html.Div(
-                                    [
-                                        html.Span(
-                                            "Original",
-                                            style={"fontWeight": "bold", "fontSize": "14px"},
-                                        ),
-                                        html.Span(
-                                            "  ← draw a box on the image to mark the anomalous region, then click Analyse",
-                                            style={"fontSize": "12px", "color": "#666"},
-                                        ),
-                                    ],
-                                    style={"marginTop": "14px", "marginBottom": "2px"},
-                                ),
-                                dcc.Loading(
-                                    type="circle",
-                                    children=dcc.Graph(
-                                        id="t2-original-graph",
-                                        style={"height": "300px"},
-                                        config={
-                                            "responsive": True,
-                                            "modeBarButtonsToAdd": ["select2d"],
-                                            "displayModeBar": True,
-                                        },
-                                    ),
-                                ),
-                                # ---- Selection info (replaces range slider) ----
-                                html.Div(
-                                    id="t2-selection-info",
-                                    style={
-                                        "padding": "6px 4px",
-                                        "fontSize": "13px",
-                                        "color": "#555",
-                                        "fontStyle": "italic",
-                                    },
-                                ),
-                                # ---- Predicted Normal image ----
-                                html.Div(
-                                    "Predicted Normal",
-                                    style={
-                                        "fontWeight": "bold",
-                                        "fontSize": "14px",
-                                        "marginTop": "10px",
-                                        "marginBottom": "2px",
-                                    },
-                                ),
-                                dcc.Loading(
-                                    type="circle",
-                                    children=dcc.Graph(
-                                        id="t2-predicted-graph",
-                                        style={"height": "300px"},
-                                        config={"responsive": True},
-                                    ),
-                                ),
-                                # ---- Anomaly Map ----
-                                html.Div(
-                                    "Anomaly Map  (actual − predicted)",
-                                    style={
-                                        "fontWeight": "bold",
-                                        "fontSize": "14px",
-                                        "marginTop": "10px",
-                                        "marginBottom": "2px",
-                                    },
-                                ),
-                                dcc.Loading(
-                                    type="circle",
-                                    children=dcc.Graph(
-                                        id="t2-anomaly-graph",
-                                        style={"height": "300px"},
-                                        config={"responsive": True},
-                                    ),
-                                ),
-                                # ---- Metrics ----
-                                html.Div(
-                                    id="t2-metrics",
-                                    style={
-                                        "padding": "10px 5px",
-                                        "fontSize": "15px",
-                                        "fontWeight": "bold",
-                                        "color": "#333",
-                                    },
-                                ),
                             ],
-                        )
+                        ),
                     ],
                 ),
             ]
         ),
         dcc.Store(id="selected-source-path"),
-        dcc.Store(id="t2-col-range"),  # {"pct_start": 0-100, "pct_end": 0-100} or {"col_start": int, "col_end": int}
+        dcc.Store(id="t2-full-path"),  # stores the full file path of the selected diff map
     ],
     style={
         "padding": "10px",
@@ -742,175 +1027,222 @@ def _save_labels(data: list[dict]) -> None:
 
 
 @callback(
-    Output("t2-process-step", "options"),
-    Output("t2-process-step", "value"),
-    Input("t2-serial", "value"),
-    Input("t2-side", "value"),
+    Output("t2-diff-table", "data"),
+    Output("t2-count", "children"),
+    Input("t2-side-filter", "value"),
 )
-def update_t2_process_steps(serial, side):
-    """Update process step dropdown options when serial or side changes."""
-    if not serial or not side:
-        return [], None
-
-    steps = sorted(
-        measurements_df.filter(
-            (pl.col("Serial") == serial) & (pl.col("Side") == side)
-        )["ProcessStep"]
-        .unique()
-        .to_list()
-    )
-    if not steps:
-        return [], None
-    return [{"label": s, "value": s} for s in steps], steps[0]
-
-
-@callback(
-    Output("t2-col-range", "data"),
-    Output("t2-selection-info", "children"),
-    Input("t2-original-graph", "selectedData"),
-    Input("t2-side", "value"),
-)
-def update_col_range(selected_data, side):
-    """
-    Update the anomalous region store from either:
-    - A box drawn on the original heatmap (selectedData)
-    - A side change (resets to the canonical ZA/ZE default)
-    """
-    ctx = dash.callback_context
-    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else None
-
-    # Side changed or no box drawn yet → use canonical default
-    if triggered_id == "t2-side" or not selected_data or "range" not in selected_data:
-        if side == "ZE":
-            info = "Active region: 0%–40% (ZE left zone default) — draw a box on Original to change"
-            return {"pct_start": 0, "pct_end": 40}, info
-        info = "Active region: 60%–100% (ZA right zone default) — draw a box on Original to change"
-        return {"pct_start": 60, "pct_end": 100}, info
-
-    # Box drawn on original image → use exact pixel column range
-    x_range = selected_data["range"].get("x", [])
-    if len(x_range) < 2:
-        return no_update, no_update
-
-    col_start = max(0, int(x_range[0]))
-    col_end = int(x_range[1]) + 1  # +1 so slice is inclusive of last selected column
-    info = f"Active region: columns {col_start}–{col_end} (box drawn on image) — draw a new box to change"
-    return {"col_start": col_start, "col_end": col_end}, info
+def filter_t2_table(side_filter):
+    """Filter the Tab 2 diff map table by side."""
+    if side_filter == "All" or not side_filter:
+        data = t2_diff_table_data
+    else:
+        data = [r for r in t2_diff_table_data if r.get("Side") == side_filter]
+    return data, f"{len(data)} files"
 
 
 @callback(
     Output("t2-original-graph", "figure"),
-    Output("t2-predicted-graph", "figure"),
-    Output("t2-anomaly-graph", "figure"),
-    Output("t2-metrics", "children"),
-    Input("t2-analyse-btn", "n_clicks"),
-    State("t2-serial", "value"),
-    State("t2-side", "value"),
-    State("t2-process-step", "value"),
-    State("t2-method", "value"),
-    State("t2-poly-degree", "value"),
-    State("t2-gauss-fwhm", "value"),
-    State("t2-col-range", "data"),
+    Output("t2-full-path", "data"),
+    Output("t2-file-title", "children"),
+    Input("t2-diff-table", "selected_rows"),
+    State("t2-diff-table", "data"),
     prevent_initial_call=True,
 )
-def run_analysis(n_clicks, serial, side, process_step, method, degree, fwhm_mm, col_range):
-    """
-    Run polynomial or Gaussian surface prediction and return three stacked figures + metrics.
+def load_t2_original(selected_rows, data):
+    """Load selected diff map and display as the Original image."""
+    empty_fig = go.Figure()
+    empty_fig.update_layout(xaxis={"visible": False}, yaxis={"visible": False})
 
-    Flow:
-        1. Look up SourcePath from measurements_df
-        2. Load .wrk file via fl.read_zygo
-        3. Convert slider % to column indices
-        4. Run prediction (polynomial or Gaussian)
-        5. Build 3 Plotly figures + metrics string
+    if not selected_rows:
+        return empty_fig, None, ""
+
+    if not ZYGO_READER_AVAILABLE:
+        return empty_fig, None, "zygo_reader not installed"
+
+    row = data[selected_rows[0]]
+    full_path = row["fullPath"]
+    file_name = os.path.basename(full_path)
+    title_str = f"{row['Side']}  |  {row['DateStr']}  |  {file_name}"
+
+    try:
+        zdat = zygo_reader.DatReader(path_or_file_like=full_path)
+        z = zdat.get_topography_nm()
+
+        z_min = float(np.nanmin(z))
+        z_max = float(np.nanmax(z))
+        fig = _make_heatmap_fig(z, f"Original — {title_str}", DARK_RAINBOW, z_min, z_max)
+        fig.update_layout(dragmode="select")
+
+        return fig, full_path, title_str
+
+    except Exception as e:
+        err_fig = go.Figure()
+        err_fig.update_layout(
+            title=f"Error: {e}",
+            xaxis={"visible": False},
+            yaxis={"visible": False},
+        )
+        return err_fig, None, title_str
+
+
+@callback(
+    Output("t2-cleaned-graph", "figure"),
+    Output("t2-selection-info", "children"),
+    Input("t2-original-graph", "selectedData"),
+    Input("t2-full-path", "data"),
+    State("t2-poly-degree", "value"),
+    prevent_initial_call=True,
+)
+def update_t2_cleaned(selected_data, full_path, degree):
+    """
+    Update the Cleaned image.
+
+    - If no box is drawn: show a copy of the original (no changes).
+    - If a box is drawn: fit polynomial to pixels OUTSIDE the box,
+      replace pixels INSIDE the box with the polynomial prediction.
     """
     empty_fig = go.Figure()
     empty_fig.update_layout(xaxis={"visible": False}, yaxis={"visible": False})
 
-    if not all([serial, side, process_step]):
-        return empty_fig, empty_fig, empty_fig, "Please select Serial, Side, and Process Step."
+    if not full_path:
+        return empty_fig, "Select a file from the table."
 
-    row = measurements_df.filter(
-        (pl.col("Serial") == serial)
-        & (pl.col("Side") == side)
-        & (pl.col("ProcessStep") == process_step)
-    )
-    if row.is_empty():
-        return empty_fig, empty_fig, empty_fig, "Measurement not found in database."
-
-    source_path = row["SourcePath"][0]
+    if not ZYGO_READER_AVAILABLE:
+        return empty_fig, "zygo_reader not installed"
 
     try:
-        topo = fl.read_zygo(source_path)
-        z = topo.z_map * 1e9  # height map in nm
+        zdat = zygo_reader.DatReader(path_or_file_like=full_path)
+        z = zdat.get_topography_nm()
         n_rows, n_cols = z.shape
 
-        # Resolve anomalous column range from store
-        # Store holds either exact pixel indices (from box-select) or percentages (from default)
-        if col_range and "col_start" in col_range:
-            anom_col_start = int(col_range["col_start"])
-            anom_col_end = min(int(col_range["col_end"]), n_cols)
-        elif col_range and "pct_start" in col_range:
-            anom_col_start = int(col_range["pct_start"] / 100 * n_cols)
-            anom_col_end = int(col_range["pct_end"] / 100 * n_cols)
-        else:
-            # Fallback: canonical side default
-            anom_col_start = int(0.6 * n_cols) if side == "ZA" else 0
-            anom_col_end = n_cols if side == "ZA" else int(0.4 * n_cols)
-
-        title_base = f"{serial} | {side} | {process_step}"
-
-        if method == "RobustPoly":
-            # IRLS robust fit — no region selection needed, uses full image
-            predicted_z, anomaly_z, metrics = predict_normal_robust_polynomial(
-                z,
-                degree=int(degree),
-                n_iter=5,
-                k_sigma=2.0,
-            )
-        elif method == "Polynomial":
-            # Manual region: fit to clean columns, extrapolate into anomalous region
-            predicted_z, anomaly_z, metrics = predict_normal_polynomial(
-                z,
-                anom_col_start=anom_col_start,
-                anom_col_end=anom_col_end,
-                degree=int(degree),
-            )
-        else:
-            # Gaussian low-pass — global filter, region used for metrics only
-            predicted_z, anomaly_z, metrics = predict_normal_gaussian(
-                topo,
-                fwhm_m=float(fwhm_mm) / 1000.0,
-                anom_col_start=anom_col_start,
-                anom_col_end=anom_col_end,
-            )
-
-        # Use the original's own range for both figures so the original never
-        # changes when the slider or method changes (predicted is shown on the
-        # same scale for fair comparison).
         z_min = float(np.nanmin(z))
         z_max = float(np.nanmax(z))
 
-        fig_original = _make_heatmap_fig(
-            z, f"Original — {title_base}", DARK_RAINBOW, z_min, z_max
+        title_base = os.path.basename(full_path)
+
+        if selected_data and "range" in selected_data:
+            x_range = selected_data["range"].get("x", [])
+            y_range = selected_data["range"].get("y", [])
+
+            if len(x_range) >= 2 and len(y_range) >= 2:
+                col_start = max(0, int(x_range[0]))
+                col_end = min(int(x_range[1]) + 1, n_cols)
+                row_start = max(0, int(min(y_range)))
+                row_end = min(int(max(y_range)) + 1, n_rows)
+
+                cleaned_z, _ = inpaint_region(
+                    z,
+                    row_start=row_start,
+                    row_end=row_end,
+                    col_start=col_start,
+                    col_end=col_end,
+                    degree=int(degree) if degree else 5,
+                )
+
+                fig = _make_heatmap_fig(
+                    cleaned_z,
+                    f"Cleaned — {title_base}",
+                    DARK_RAINBOW,
+                    z_min,
+                    z_max,
+                )
+                info = (
+                    f"Selected region: rows {row_start}-{row_end}, "
+                    f"cols {col_start}-{col_end} — "
+                    f"replaced with polynomial fit (degree {degree})"
+                )
+                return fig, info
+
+        # No selection — show original as-is
+        fig = _make_heatmap_fig(z, f"Cleaned — {title_base} (no selection)", DARK_RAINBOW, z_min, z_max)
+        return fig, "Draw a box on the Original image to select the anomaly region."
+
+    except Exception as e:
+        err_fig = go.Figure()
+        err_fig.update_layout(
+            title=f"Error: {e}",
+            xaxis={"visible": False},
+            yaxis={"visible": False},
         )
-        # Enable box-select as default mouse mode so user can draw region directly
-        fig_original.update_layout(dragmode="select")
-        fig_predicted = _make_heatmap_fig(
+        return err_fig, f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# TAB 3 Callbacks
+# ---------------------------------------------------------------------------
+
+
+@callback(
+    Output("t3-diff-table", "data"),
+    Output("t3-count", "children"),
+    Input("t3-side-filter", "value"),
+)
+def filter_diff_table(side_filter):
+    """Filter the diff map table by side."""
+    if side_filter == "All" or not side_filter:
+        data = diff_table_data
+    else:
+        data = [r for r in diff_table_data if r.get("Side") == side_filter]
+    return data, f"{len(data)} files"
+
+
+@callback(
+    Output("t3-raw-graph", "figure"),
+    Output("t3-baseline-graph", "figure"),
+    Output("t3-anomaly-graph", "figure"),
+    Output("t3-metrics", "children"),
+    Output("t3-file-title", "children"),
+    Input("t3-diff-table", "selected_rows"),
+    State("t3-diff-table", "data"),
+    prevent_initial_call=True,
+)
+def load_diff_map(selected_rows, data):
+    """Load selected diff map, run IRLS, return 3 figures + metrics."""
+    empty_fig = go.Figure()
+    empty_fig.update_layout(xaxis={"visible": False}, yaxis={"visible": False})
+
+    if not selected_rows:
+        return empty_fig, empty_fig, empty_fig, "", ""
+
+    if not ZYGO_READER_AVAILABLE:
+        return (
+            empty_fig, empty_fig, empty_fig,
+            "zygo_reader not installed — run: uv sync",
+            "",
+        )
+
+    row = data[selected_rows[0]]
+    full_path = row["fullPath"]
+    file_name = os.path.basename(full_path)
+    title_str = f"{row['Side']}  |  {row['DateStr']}  |  {file_name}"
+
+    try:
+        zdat = zygo_reader.DatReader(path_or_file_like=full_path)
+        z = zdat.get_topography_nm()  # already in nm
+
+        # IRLS robust polynomial decomposition
+        predicted_z, anomaly_z, metrics = predict_normal_robust_polynomial(
+            z, degree=5, n_iter=5, k_sigma=2.0
+        )
+
+        z_min = float(np.nanmin(z))
+        z_max = float(np.nanmax(z))
+
+        fig_raw = _make_heatmap_fig(z, f"Raw Diff — {title_str}", DARK_RAINBOW, z_min, z_max)
+        fig_baseline = _make_heatmap_fig(
             predicted_z,
-            f"Predicted Normal ({method}) — {title_base}",
+            f"Process Baseline (IRLS) — {title_str}",
             DARK_RAINBOW,
             z_min,
             z_max,
         )
 
-        # Anomaly map: diverging colorscale (RdBu_r), symmetric around 0
         anom_abs_max = float(np.nanmax(np.abs(anomaly_z)))
         if anom_abs_max < 1e-10:
             anom_abs_max = 1.0
         fig_anomaly = _make_heatmap_fig(
             anomaly_z,
-            f"Anomaly Map (actual − predicted) — {title_base}",
+            f"Anomaly Signal — {title_str}",
             "RdBu_r",
             -anom_abs_max,
             anom_abs_max,
@@ -925,7 +1257,7 @@ def run_analysis(n_clicks, serial, side, process_step, method, degree, fwhm_mm, 
             f"Anomaly area: {m['anomaly_area_pct']:.0f}% > ±10 nm"
         )
 
-        return fig_original, fig_predicted, fig_anomaly, metrics_text
+        return fig_raw, fig_baseline, fig_anomaly, metrics_text, title_str
 
     except Exception as e:
         err_fig = go.Figure()
@@ -934,7 +1266,48 @@ def run_analysis(n_clicks, serial, side, process_step, method, degree, fwhm_mm, 
             xaxis={"visible": False},
             yaxis={"visible": False},
         )
-        return err_fig, empty_fig, empty_fig, f"Error: {e}"
+        return err_fig, empty_fig, empty_fig, f"Error: {e}", title_str
+
+
+@callback(
+    Output("t3-label-status", "children"),
+    Output("t3-diff-table", "data", allow_duplicate=True),
+    Input("t3-btn-normal", "n_clicks"),
+    Input("t3-btn-anomaly", "n_clicks"),
+    Input("t3-btn-skip", "n_clicks"),
+    State("t3-diff-table", "selected_rows"),
+    State("t3-diff-table", "data"),
+    prevent_initial_call=True,
+)
+def apply_diff_label(n_normal, n_anomaly, n_skip, selected_rows, data):
+    """Apply a label to the selected diff map row and persist."""
+    if not selected_rows:
+        return "No row selected — click a row first.", no_update
+
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return no_update, no_update
+
+    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    label_map = {
+        "t3-btn-normal": "Normal",
+        "t3-btn-anomaly": "Anomaly",
+        "t3-btn-skip": "Skip",
+    }
+    label = label_map.get(button_id)
+    if label is None:
+        return no_update, no_update
+
+    row_idx = selected_rows[0]
+    data[row_idx]["Label"] = label
+    _save_diff_labels(data)
+
+    # Also update the master in-memory list
+    diff_table_data[row_idx]["Label"] = label
+
+    file_name = os.path.basename(data[row_idx]["fullPath"])
+    status = f"Labeled: {file_name} → {label}"
+    return status, data
 
 
 # ---------------------------------------------------------------------------
